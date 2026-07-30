@@ -229,6 +229,17 @@ def _discord_tools_loaded() -> bool:
         return False
 
 
+def _investment_action_review_enabled() -> bool:
+    """Return true when gateway prompt should request action-card metadata."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        iar = cfg.get("investment_action_review", {}) if isinstance(cfg, dict) else {}
+        return bool(isinstance(iar, dict) and iar.get("enabled", False))
+    except Exception:
+        return False
+
+
 def build_session_context_prompt(
     context: SessionContext,
     *,
@@ -389,6 +400,18 @@ def build_session_context_prompt(
             "You CAN send private (DM) messages via the send_message tool. "
             "Use target='yuanbao:direct:<account_id>' for DM "
             "and target='yuanbao:group:<group_code>' for group chat."
+        )
+
+    if _investment_action_review_enabled():
+        lines.append("")
+        lines.append(
+            "**Investment Action Review:** When you give a concrete investment/trading action "
+            "(buy/sell/trim/hold/watch/avoid/staged entry), append exactly one hidden metadata "
+            "block in this form after the user-visible answer: `<!-- HERMES_ACTION_CARD {json} -->`. "
+            "The JSON should include action, opinion, time_horizon, trigger, invalidation, and risk "
+            "bounds such as entry_zone/target_zone/stop_loss when available. Do not include secrets "
+            "or raw private conversation text. The gateway strips this block before delivery and "
+            "captures it for later investment review."
         )
 
     # Connected platforms
