@@ -6859,6 +6859,70 @@ class GatewayRunner:
             try:
                 logger.debug("Transcribing user voice: %s", path)
                 result = await asyncio.to_thread(transcribe_audio, path)
+
+                # Robust fallback: some providers intermittently reject otherwise-valid
+                # Discord OGG/Opus attachments with decode errors. Re-encode to a
+                # conservative WAV (mono/16k/pcm_s16le) and retry once.
+                if not result.get("success"):
+                    err = str(result.get("error", ""))
+                    if any(
+                        marker in err.lower()
+                        for marker in ("could not open/decode file", "invalid data found", "decode")
+                    ):
+                        try:
+                            import subprocess
+                            import tempfile
+                            from pathlib import Path
+
+                            src = Path(path)
+                            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_wav:
+                                wav_path = tmp_wav.name
+
+                            cmd = [
+                                "ffmpeg",
+                                "-y",
+                                "-i",
+                                str(src),
+                                "-ac",
+                                "1",
+                                "-ar",
+                                "16000",
+                                "-c:a",
+                                "pcm_s16le",
+                                wav_path,
+                            ]
+                            proc = await asyncio.to_thread(
+                                subprocess.run,
+                                cmd,
+                                capture_output=True,
+                                text=True,
+                                check=False,
+                            )
+                            if proc.returncode == 0:
+                                retry_result = await asyncio.to_thread(transcribe_audio, wav_path)
+                                if retry_result.get("success"):
+                                    logger.info(
+                                        "Transcription fallback succeeded after ffmpeg re-encode: %s -> %s",
+                                        src,
+                                        wav_path,
+                                    )
+                                    result = retry_result
+                                else:
+                                    logger.warning(
+                                        "Transcription fallback retry failed for %s: %s",
+                                        src,
+                                        retry_result.get("error", "unknown error"),
+                                    )
+                            else:
+                                logger.warning(
+                                    "ffmpeg re-encode failed for %s (code=%s): %s",
+                                    src,
+                                    proc.returncode,
+                                    (proc.stderr or "").strip()[:400],
+                                )
+                        except Exception as fallback_err:
+                            logger.warning("Transcription fallback error for %s: %s", path, fallback_err)
+
                 if result["success"]:
                     transcript = result["transcript"]
                     enriched_parts.append(

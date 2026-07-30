@@ -262,25 +262,51 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     voice = oai_config.get("voice", DEFAULT_OPENAI_VOICE)
     base_url = oai_config.get("base_url", base_url)
 
-    # Determine response format from extension
-    if output_path.endswith(".ogg"):
+    # Determine response format from extension (or explicit config override)
+    configured_format = (oai_config.get("response_format") or "").strip().lower()
+    if configured_format:
+        response_format = configured_format
+    elif output_path.endswith(".ogg"):
         response_format = "opus"
+    elif output_path.endswith(".wav"):
+        response_format = "wav"
     else:
         response_format = "mp3"
 
     OpenAIClient = _import_openai_client()
     client = OpenAIClient(api_key=api_key, base_url=base_url)
+    actual_output_path = output_path
     try:
-        response = client.audio.speech.create(
-            model=model,
-            voice=voice,
-            input=text,
-            response_format=response_format,
-            extra_headers={"x-idempotency-key": str(uuid.uuid4())},
-        )
+        try:
+            response = client.audio.speech.create(
+                model=model,
+                voice=voice,
+                input=text,
+                response_format=response_format,
+                extra_headers={"x-idempotency-key": str(uuid.uuid4())},
+            )
+        except Exception as e:
+            # Some OpenAI-compatible servers only support WAV output.
+            error_text = str(e).lower()
+            if response_format != "wav" and ("not supported" in error_text and "wav" in error_text):
+                logger.warning(
+                    "OpenAI-compatible TTS endpoint rejected response_format=%s; retrying with wav",
+                    response_format,
+                )
+                response = client.audio.speech.create(
+                    model=model,
+                    voice=voice,
+                    input=text,
+                    response_format="wav",
+                    extra_headers={"x-idempotency-key": str(uuid.uuid4())},
+                )
+                # Keep extension aligned with actual codec for downstream delivery/players.
+                actual_output_path = str(Path(output_path).with_suffix(".wav"))
+            else:
+                raise
 
-        response.stream_to_file(output_path)
-        return output_path
+        response.stream_to_file(actual_output_path)
+        return actual_output_path
     finally:
         close = getattr(client, "close", None)
         if callable(close):
@@ -582,7 +608,7 @@ def text_to_speech_tool(
                     "error": "OpenAI provider selected but 'openai' package not installed."
                 }, ensure_ascii=False)
             logger.info("Generating speech with OpenAI TTS...")
-            _generate_openai_tts(text, file_str, tts_config)
+            file_str = _generate_openai_tts(text, file_str, tts_config)
 
         elif provider == "minimax":
             logger.info("Generating speech with MiniMax TTS...")

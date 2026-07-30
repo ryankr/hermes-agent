@@ -1,7 +1,7 @@
 """Gateway STT config tests — honor stt.enabled: false from config.yaml."""
 
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import yaml
@@ -114,3 +114,33 @@ async def test_prepare_inbound_message_text_transcribes_queued_voice_event():
     assert result is not None
     assert "queued voice transcript" in result
     assert "voice message" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_enrich_message_with_transcription_reencodes_and_retries_on_decode_error(tmp_path):
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(stt_enabled=True)
+    runner._has_setup_skill = lambda: False
+
+    src = tmp_path / "voice.ogg"
+    src.write_bytes(b"OggSfake")
+
+    def _fake_transcribe(path: str):
+        if str(path).endswith(".ogg"):
+            return {
+                "success": False,
+                "error": "API error: Error code: 500 - {'detail': 'could not open/decode file'}",
+            }
+        return {"success": True, "transcript": "fallback success", "provider": "openai"}
+
+    proc = MagicMock(returncode=0, stderr="")
+
+    with patch("tools.transcription_tools.transcribe_audio", side_effect=_fake_transcribe), patch(
+        "subprocess.run", return_value=proc
+    ) as mock_run:
+        result = await runner._enrich_message_with_transcription("", [str(src)])
+
+    assert "fallback success" in result
+    assert mock_run.call_count == 1
