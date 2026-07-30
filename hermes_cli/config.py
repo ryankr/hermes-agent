@@ -2250,6 +2250,18 @@ DEFAULT_CONFIG = {
         "force_ipv4": False,
     },
 
+    # Opt-in investment action-card capture.  When enabled, gateway final
+    # responses are scanned for explicit HERMES_ACTION_CARD metadata blocks,
+    # those blocks are stripped from user-visible text, sidecar JSON is saved,
+    # and the optional stock-analysis-system adapter is invoked.  Disabled by
+    # default so generic Hermes installs do not write external project files.
+    "investment_action_review": {
+        "enabled": False,
+        "capture_dir": "",
+        "stock_analysis_system_path": "",
+        "adapter_timeout_seconds": 5,
+    },
+
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
@@ -4122,7 +4134,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
-    "sessions", "streaming", "updates", "mcp_servers",
+    "investment_action_review", "sessions", "streaming", "updates", "mcp_servers",
 }
 
 # Valid fields inside a custom_providers list entry

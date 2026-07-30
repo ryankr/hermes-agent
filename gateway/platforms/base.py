@@ -4236,6 +4236,20 @@ class BasePlatformAdapter(ABC):
                 # with an unknown extension is intentionally left in the body for
                 # extract_local_files below to pick up rather than silently dropped (#34517).
                 text_content = _strip_media_directives(text_content).strip()
+
+                # Investment action-card capture (opt-in via config): strip
+                # explicit metadata blocks before platform delivery, then
+                # persist/adapt them out-of-band. This keeps user-visible text
+                # clean and makes capture failure non-fatal for response
+                # delivery.
+                _investment_action_cards = []
+                if text_content:
+                    try:
+                        from gateway.investment_action_capture import extract_action_cards
+                        text_content, _investment_action_cards = extract_action_cards(text_content)
+                    except Exception:
+                        logger.debug("[%s] investment action-card extraction failed", self.name, exc_info=True)
+
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
 
@@ -4341,6 +4355,30 @@ class BasePlatformAdapter(ABC):
                         metadata=_thread_metadata,
                     )
                     _record_delivery(result)
+
+                    if _investment_action_cards and result.success:
+                        source_metadata = {
+                            "platform": self.platform.value,
+                            "chat_id": event.source.chat_id,
+                            "thread_id": getattr(event.source, "thread_id", None),
+                            "user_id": getattr(event.source, "user_id", None),
+                            "inbound_message_id": event.message_id,
+                            "message_id": result.message_id,
+                        }
+                        async def _capture_cards() -> None:
+                            try:
+                                from gateway.investment_action_capture import capture_action_cards
+                                await asyncio.to_thread(
+                                    capture_action_cards,
+                                    _investment_action_cards,
+                                    source_metadata=source_metadata,
+                                )
+                            except Exception:
+                                logger.debug("[%s] investment action-card capture failed", self.name, exc_info=True)
+                        try:
+                            asyncio.create_task(_capture_cards())
+                        except RuntimeError:
+                            await _capture_cards()
 
                     # Schedule auto-deletion of system-notice replies.
                     # Detached so the handler returns immediately; errors
