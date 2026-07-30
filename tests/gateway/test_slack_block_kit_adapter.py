@@ -77,6 +77,25 @@ class TestSendMessageBlocks:
             assert "blocks" not in c.kwargs
             assert c.kwargs["text"]
 
+    @pytest.mark.asyncio
+    async def test_pipe_tables_default_to_readable_bullets(self):
+        adapter, client = _make_adapter()
+        table = (
+            "비교:\n\n"
+            "| 종목 | 가격 | 의견 |\n"
+            "|---|---:|---|\n"
+            "| 삼성전자 | 72,000 | 매수 |\n"
+            "| SK하이닉스 | 180,000 | 관망 |"
+        )
+        await adapter.send("C1", table)
+        text = client.chat_postMessage.await_args.kwargs["text"]
+        assert "| 종목 | 가격 | 의견 |" not in text
+        assert "*삼성전자*" in text
+        assert "• 가격: 72,000" in text
+        assert "• 의견: 매수" in text
+        assert "*SK하이닉스*" in text
+        assert "• 가격: 180,000" in text
+
 
 class TestEditMessageBlocks:
     @pytest.mark.asyncio

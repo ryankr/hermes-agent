@@ -37,7 +37,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MessageDeduplicator, convert_table_to_bullets
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -1921,7 +1921,7 @@ class SlackAdapter(BasePlatformAdapter):
             placeholders[key] = value
             return key
 
-        text = content
+        text = convert_table_to_bullets(content)
 
         # 1) Protect fenced code blocks (``` ... ```)
         text = re.sub(
