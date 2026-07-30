@@ -34,6 +34,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
+from agent.memory_routing import MemoryRoute, build_memory_route
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.registry import tool_error
 
@@ -502,9 +503,14 @@ class MemoryManager:
         if not clean_query:
             return ""
         parts = []
+        route = self._build_memory_route(clean_query)
+        routed_query = route.rewritten_query or clean_query
+        route_block = self._format_memory_route_block(route)
+        if route_block:
+            parts.append(route_block)
         for provider in self._providers:
             try:
-                result = provider.prefetch(clean_query, session_id=session_id)
+                result = provider.prefetch(routed_query, session_id=session_id)
                 if result and result.strip():
                     parts.append(result)
             except Exception as e:
@@ -513,6 +519,37 @@ class MemoryManager:
                     provider.name, e,
                 )
         return "\n\n".join(parts)
+
+    @staticmethod
+    def _build_memory_route(query: str) -> MemoryRoute:
+        try:
+            return build_memory_route(query)
+        except Exception as e:
+            logger.debug("memory routing failed (non-fatal): %s", e)
+            return MemoryRoute()
+
+    @staticmethod
+    def _format_memory_route_block(route: MemoryRoute) -> str:
+        if not (route.domains or route.slots or route.gate_required or route.should_update_policy):
+            return ""
+        lines = [
+            "## Memory Routing",
+            "Use this routing metadata to decide which persistent memories are relevant. "
+            "Do not invent slot values that are not present in recalled memory/profile context.",
+        ]
+        if route.domains:
+            lines.append(f"domains: {', '.join(route.domains)}")
+        if route.risk:
+            lines.append(f"risk: {route.risk}")
+        if route.slots:
+            lines.append(f"required_if_available slots: {', '.join(route.slots)}")
+        if route.new_topic_candidate:
+            lines.append(f"new_topic_candidate: {route.new_topic_candidate}")
+        if route.suggested_slots:
+            lines.append(f"suggested_slots: {', '.join(route.suggested_slots)}")
+        if route.gate_required:
+            lines.append("gate_required: true")
+        return "\n".join(lines)
 
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
         """Queue background prefetch on all providers for the next turn.
@@ -529,10 +566,13 @@ class MemoryManager:
         if not clean_query:
             return
 
+        route = self._build_memory_route(clean_query)
+        routed_query = route.rewritten_query or clean_query
+
         def _run() -> None:
             for provider in providers:
                 try:
-                    provider.queue_prefetch(clean_query, session_id=session_id)
+                    provider.queue_prefetch(routed_query, session_id=session_id)
                 except Exception as e:
                     logger.debug(
                         "Memory provider '%s' queue_prefetch failed (non-fatal): %s",
