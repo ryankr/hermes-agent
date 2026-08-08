@@ -34,6 +34,24 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
     )
     memory_sub.add_parser("status", help="Show current memory provider config")
     memory_sub.add_parser("off", help="Disable external provider (built-in only)")
+    evaluate_parser = memory_sub.add_parser(
+        "evaluate", help="Record a local reviewer label for a session's memory use"
+    )
+    evaluate_parser.add_argument("session_id", help="Exact or unique session-ID prefix")
+    evaluate_parser.add_argument(
+        "--retrieval",
+        choices=["used_verified", "used_but_stale", "not_used_irrelevant", "wrong_or_conflicting", "missing"],
+        help="How retrieved memory affected the work",
+    )
+    evaluate_parser.add_argument(
+        "--outcome", choices=["helped", "neutral", "hindered"],
+        help="Overall memory outcome",
+    )
+    evaluate_parser.add_argument(
+        "--recheck", choices=["none", "ssot_check", "correction"],
+        help="Whether a live source was needed to recheck memory",
+    )
+    evaluate_parser.add_argument("--note", help="Optional short local reviewer note")
     _reset_parser = memory_sub.add_parser(
         "reset",
         help="Erase all built-in memory (MEMORY.md and USER.md)",

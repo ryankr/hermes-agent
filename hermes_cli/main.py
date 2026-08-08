@@ -11288,6 +11288,26 @@ def cmd_memory(args):
         save_config(config)
         print("\n  ✓ Memory provider: built-in only")
         print("  Saved to config.yaml\n")
+    elif sub == "evaluate":
+        if not any((args.retrieval, args.outcome, args.recheck, args.note)):
+            raise SystemExit("memory evaluate requires at least one label or --note")
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            session_id = db.resolve_session_id(args.session_id)
+            if not session_id:
+                raise SystemExit(f"No unique session matches: {args.session_id}")
+            db.upsert_memory_evaluation(
+                session_id,
+                retrieval=args.retrieval,
+                outcome=args.outcome,
+                recheck=args.recheck,
+                note=args.note,
+            )
+            print(f"✓ Local memory evaluation saved for {session_id}")
+        finally:
+            db.close()
     elif sub == "reset":
         from hermes_constants import get_hermes_home, display_hermes_home
 

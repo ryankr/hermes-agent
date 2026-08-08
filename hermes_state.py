@@ -574,6 +574,20 @@ CREATE TABLE IF NOT EXISTS state_meta (
     value TEXT
 );
 
+-- Local, human-supplied evaluation labels for memory observability.  This
+-- deliberately stores labels only — never prompt, recall, or response text.
+CREATE TABLE IF NOT EXISTS memory_evaluations (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    retrieval TEXT CHECK (retrieval IN (
+        'used_verified', 'used_but_stale', 'not_used_irrelevant',
+        'wrong_or_conflicting', 'missing'
+    )),
+    outcome TEXT CHECK (outcome IN ('helped', 'neutral', 'hindered')),
+    recheck TEXT CHECK (recheck IN ('none', 'ssot_check', 'correction')),
+    note TEXT,
+    updated_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS compression_locks (
     session_id TEXT PRIMARY KEY,
     holder TEXT NOT NULL,
@@ -1702,6 +1716,57 @@ class SessionDB:
                 "SELECT * FROM sessions WHERE id = ?", (session_id,)
             )
             row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def upsert_memory_evaluation(
+        self,
+        session_id: str,
+        *,
+        retrieval: Optional[str] = None,
+        outcome: Optional[str] = None,
+        recheck: Optional[str] = None,
+        note: Optional[str] = None,
+    ) -> bool:
+        """Store one local, human-supplied memory evaluation for *session_id*.
+
+        The row holds labels only; recalled context and model output remain in
+        the existing transcript and are not copied into observability data.
+        """
+        allowed = {
+            "retrieval": {"used_verified", "used_but_stale", "not_used_irrelevant", "wrong_or_conflicting", "missing"},
+            "outcome": {"helped", "neutral", "hindered"},
+            "recheck": {"none", "ssot_check", "correction"},
+        }
+        for field, value in (("retrieval", retrieval), ("outcome", outcome), ("recheck", recheck)):
+            if value is not None and value not in allowed[field]:
+                raise ValueError(f"Invalid memory evaluation {field}: {value}")
+        if note is not None:
+            note = str(note).strip() or None
+
+        def _write(conn: sqlite3.Connection) -> bool:
+            exists = conn.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if not exists:
+                raise KeyError(f"Unknown session: {session_id}")
+            conn.execute(
+                """INSERT INTO memory_evaluations
+                   (session_id, retrieval, outcome, recheck, note, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(session_id) DO UPDATE SET
+                     retrieval=excluded.retrieval, outcome=excluded.outcome,
+                     recheck=excluded.recheck, note=excluded.note,
+                     updated_at=excluded.updated_at""",
+                (session_id, retrieval, outcome, recheck, note, time.time()),
+            )
+            return True
+
+        return self._execute_write(_write)
+
+    def get_memory_evaluation(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Return the local memory evaluation for a session, if present."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM memory_evaluations WHERE session_id = ?", (session_id,)
+            ).fetchone()
         return dict(row) if row else None
 
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:

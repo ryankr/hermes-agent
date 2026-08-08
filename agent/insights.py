@@ -28,6 +28,7 @@ from agent.usage_pricing import (
     format_duration_compact,
     has_known_pricing,
 )
+from agent.memory_observability import MemoryObservabilityEngine
 
 
 
@@ -117,6 +118,7 @@ class InsightsEngine:
         tool_usage = self._get_tool_usage(cutoff, source)
         skill_usage = self._get_skill_usage(cutoff, source)
         message_stats = self._get_message_stats(cutoff, source)
+        memory_observability = MemoryObservabilityEngine(self.db).generate(days=days, source=source)
 
         if not sessions:
             return {
@@ -138,6 +140,7 @@ class InsightsEngine:
                 },
                 "activity": {},
                 "top_sessions": [],
+                "memory_observability": memory_observability,
             }
 
         # Compute insights
@@ -161,6 +164,7 @@ class InsightsEngine:
             "skills": skills,
             "activity": activity,
             "top_sessions": top_sessions,
+            "memory_observability": memory_observability,
         }
 
     # =========================================================================
@@ -850,6 +854,46 @@ class InsightsEngine:
             lines.append("  " + "─" * 56)
             for ts in report["top_sessions"]:
                 lines.append(f"  {ts['label']:<20} {ts['value']:<18} ({ts['date']}, {ts['session_id']})")
+            lines.append("")
+
+        # Memory observability (local transcript analysis + explicit reviewer labels)
+        memory = report.get("memory_observability")
+        if memory:
+            coverage = memory["coverage"]
+            precision = memory["precision"]
+            outcomes = memory["outcomes"]
+            cohorts = memory["cohorts"]
+            lines.append("  🧠 Memory Observability")
+            lines.append("  " + "─" * 56)
+            lines.append(
+                f"  Coverage: {coverage['memory_used_sessions']}/{coverage['sessions']} sessions "
+                f"({coverage['memory_used_session_rate']:.1%})"
+            )
+            source_bits = [
+                f"{name}: {values['calls']} calls/{values['sessions']} sessions"
+                for name, values in coverage["sources"].items() if values["calls"]
+            ]
+            lines.append("  Sources: " + ("; ".join(source_bits) if source_bits else "no retrieval calls detected"))
+            precision_text = "unlabelled" if precision["precision"] is None else f"{precision['precision']:.1%}"
+            stale_text = "unlabelled" if precision["staleness_or_conflict_rate"] is None else f"{precision['staleness_or_conflict_rate']:.1%}"
+            lines.append(
+                f"  Review: {precision['labelled_sessions']} labelled; precision {precision_text}; "
+                f"stale/conflict {stale_text}"
+            )
+            lines.append(
+                f"  Outcomes: helped {outcomes['counts']['helped']}, neutral {outcomes['counts']['neutral']}, "
+                f"hindered {outcomes['counts']['hindered']}"
+            )
+            used, plain = cohorts["memory_used"], cohorts["no_memory"]
+            used_input = "—" if used["median_input_tokens"] is None else str(used["median_input_tokens"])
+            plain_input = "—" if plain["median_input_tokens"] is None else str(plain["median_input_tokens"])
+            used_duration = "—" if used["median_duration_seconds"] is None else f"{used['median_duration_seconds']}s"
+            plain_duration = "—" if plain["median_duration_seconds"] is None else f"{plain['median_duration_seconds']}s"
+            lines.append(
+                f"  Cohorts (median input tokens / duration): memory {used_input} / "
+                f"{used_duration}; no-memory {plain_input} / {plain_duration}"
+            )
+            lines.append(f"  Note: {memory['note']}")
             lines.append("")
 
         return "\n".join(lines)
