@@ -6433,6 +6433,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # plugin adapters don't need a custom factory signature.
                     if hasattr(adapter, "gateway_runner"):
                         adapter.gateway_runner = self
+                    if hasattr(adapter, "_voice_companion_callback"):
+                        adapter._voice_companion_callback = self._handle_voice_companion_join
                     return adapter
                 # Registered but failed to instantiate — don't silently fall
                 # through to built-ins (there are none for plugin platforms).
@@ -9997,6 +9999,75 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Join failed — clear callback
         adapter._voice_input_callback = None
         return "Failed to join voice channel. Check bot permissions (Connect + Speak)."
+
+    async def _handle_voice_companion_join(
+        self,
+        *,
+        guild_id: int,
+        user_id: int,
+        text_channel_id: int,
+        voice_channel: Any,
+    ) -> None:
+        """Bind and join Voice Companion through the ordinary Discord pipeline."""
+        adapter = self.adapters.get(Platform.DISCORD)
+        if adapter is None or not hasattr(adapter, "join_voice_channel"):
+            logger.warning("Voice Companion join ignored: Discord adapter is unavailable")
+            return
+
+        # Fail closed before connecting: a Voice Companion must have a text
+        # channel in the same guild to anchor transcripts and agent sessions.
+        client = getattr(adapter, "_client", None)
+        text_channel = client.get_channel(text_channel_id) if client is not None else None
+        if (
+            text_channel is None
+            or getattr(getattr(text_channel, "guild", None), "id", None) != guild_id
+        ):
+            logger.warning(
+                "Voice Companion ignored: text channel %s is unavailable or outside guild %s",
+                text_channel_id, guild_id,
+            )
+            return
+
+        # Wire callbacks before connecting, as for manual /voice join, so the
+        # receiver cannot lose an utterance arriving immediately after connect.
+        adapter._voice_input_callback = self._handle_voice_channel_input
+        adapter._on_voice_disconnect = self._handle_voice_timeout_cleanup
+        adapter._voice_mode_getter = lambda chat_id: self._voice_mode.get(
+            self._voice_key(Platform.DISCORD, str(chat_id)), "off"
+        )
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id=str(text_channel_id),
+            user_id=str(user_id),
+            user_name=str(user_id),
+            chat_type="channel",
+        )
+        try:
+            success = await adapter.join_voice_channel(voice_channel)
+        except Exception as exc:
+            logger.warning("Voice Companion failed to join guild=%s: %s", guild_id, exc)
+            return
+        if not success:
+            logger.warning("Voice Companion join was rejected in guild=%s", guild_id)
+            return
+
+        adapter._voice_text_channels[guild_id] = text_channel_id
+        adapter._voice_sources[guild_id] = source.to_dict()
+        # Explicit Companion configuration is a voice authorization boundary,
+        # but receiving/transcribing still honours the existing allowlist.
+        allowed_ids = getattr(adapter, "_allowed_user_ids", None)
+        if isinstance(allowed_ids, set) and allowed_ids and str(user_id) not in allowed_ids:
+            logger.warning(
+                "Voice Companion joined but user=%s is not in DISCORD_ALLOWED_USERS; voice input will be ignored",
+                user_id,
+            )
+        self._voice_mode[self._voice_key(Platform.DISCORD, str(text_channel_id))] = "all"
+        self._save_voice_modes()
+        self._set_adapter_auto_tts_enabled(adapter, str(text_channel_id), enabled=True)
+        logger.info(
+            "Voice Companion joined %s (guild=%s, user=%s)",
+            getattr(voice_channel, "name", voice_channel), guild_id, user_id,
+        )
 
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
         """Leave the Discord voice channel."""

@@ -1282,6 +1282,149 @@ class TestDiscordVoiceChannelMethods:
         # Should not raise
 
 
+class TestDiscordVoiceCompanion:
+    """The configured companion user can start voice without a slash command."""
+
+    def _make_adapter(self):
+        from plugins.platforms.discord.adapter import DiscordAdapter
+        from gateway.config import Platform, PlatformConfig
+        adapter = object.__new__(DiscordAdapter)
+        adapter.platform = Platform.DISCORD
+        adapter.config = PlatformConfig(enabled=True, extra={})
+        adapter._client = MagicMock()
+        adapter._voice_clients = {}
+        adapter._voice_companion_callback = None
+        return adapter
+
+    def test_voice_companion_config_requires_explicit_enabled_and_ids(self):
+        from plugins.platforms.discord.adapter import _read_voice_companion_config
+
+        with patch("hermes_cli.config.read_raw_config", return_value={
+            "discord": {"voice_companion": {
+                "enabled": True, "user_id": "42", "guild_id": "111", "text_channel_id": "99",
+            }}
+        }):
+            assert _read_voice_companion_config() == {
+                "user_id": 42, "guild_id": 111, "text_channel_id": 99,
+            }
+
+    @pytest.mark.parametrize("config", [
+        {},
+        {"discord": {"voice_companion": {"enabled": False, "user_id": 42, "guild_id": 111, "text_channel_id": 99}}},
+        {"discord": {"voice_companion": {"enabled": True, "user_id": "nope", "guild_id": 111, "text_channel_id": 99}}},
+        {"discord": {"voice_companion": {"enabled": True, "user_id": 42, "guild_id": 111, "text_channel_id": 0}}},
+        {"discord": {"voice_companion": {"enabled": True, "user_id": True, "guild_id": 111, "text_channel_id": 99}}},
+        {"discord": {"voice_companion": {"enabled": True, "user_id": 42, "guild_id": True, "text_channel_id": 99}}},
+    ])
+    def test_voice_companion_config_fails_closed(self, config):
+        from plugins.platforms.discord.adapter import _read_voice_companion_config
+
+        with patch("hermes_cli.config.read_raw_config", return_value=config):
+            assert _read_voice_companion_config() is None
+
+    @pytest.mark.asyncio
+    async def test_voice_companion_join_event_calls_runner_callback(self):
+        adapter = self._make_adapter()
+        callback = AsyncMock()
+        adapter._voice_companion_callback = callback
+        member = SimpleNamespace(id=42, guild=SimpleNamespace(id=111), display_name="Ryan")
+        before = SimpleNamespace(channel=None)
+        target_channel = SimpleNamespace(id=777, name="Focus")
+        after = SimpleNamespace(channel=target_channel)
+
+        with patch("plugins.platforms.discord.adapter._read_voice_companion_config",
+                   return_value={"user_id": 42, "guild_id": 111, "text_channel_id": 99}):
+            await adapter._handle_voice_companion_state_update(member, before, after)
+
+        callback.assert_awaited_once_with(
+            guild_id=111, user_id=42, text_channel_id=99, voice_channel=target_channel,
+        )
+
+    @pytest.mark.asyncio
+    async def test_voice_companion_ignores_other_users_and_leaves(self):
+        adapter = self._make_adapter()
+        callback = AsyncMock()
+        adapter._voice_companion_callback = callback
+
+        with patch("plugins.platforms.discord.adapter._read_voice_companion_config",
+                   return_value={"user_id": 42, "guild_id": 111, "text_channel_id": 99}):
+            await adapter._handle_voice_companion_state_update(
+                SimpleNamespace(id=7, guild=SimpleNamespace(id=111), display_name="Other"),
+                SimpleNamespace(channel=None), SimpleNamespace(channel=SimpleNamespace(id=777)),
+            )
+            await adapter._handle_voice_companion_state_update(
+                SimpleNamespace(id=42, guild=SimpleNamespace(id=111), display_name="Ryan"),
+                SimpleNamespace(channel=SimpleNamespace(id=777)), SimpleNamespace(channel=None),
+            )
+
+        callback.assert_not_awaited()
+
+
+class TestVoiceCompanionRunnerBinding:
+    @pytest.mark.asyncio
+    async def test_companion_join_binds_normal_voice_pipeline(self, tmp_path):
+        runner = _make_runner(tmp_path)
+        from gateway.config import Platform
+        adapter = AsyncMock()
+        adapter.join_voice_channel = AsyncMock(return_value=True)
+        adapter._voice_text_channels = {}
+        adapter._voice_sources = {}
+        adapter._voice_input_callback = None
+        adapter._client = MagicMock()
+        adapter._client.get_channel.return_value = SimpleNamespace(
+            id=99, guild=SimpleNamespace(id=111), name="general",
+        )
+        runner.adapters[Platform.DISCORD] = adapter
+
+        await runner._handle_voice_companion_join(
+            guild_id=111, user_id=42, text_channel_id=99,
+            voice_channel=SimpleNamespace(id=777, name="Focus"),
+        )
+
+        adapter.join_voice_channel.assert_awaited_once()
+        assert adapter._voice_text_channels[111] == 99
+        assert adapter._voice_sources[111]["chat_id"] == "99"
+        assert runner._voice_mode["discord:99"] == "all"
+
+    @pytest.mark.asyncio
+    async def test_companion_rejects_text_channel_from_another_guild(self, tmp_path):
+        runner = _make_runner(tmp_path)
+        from gateway.config import Platform
+        adapter = AsyncMock()
+        adapter.join_voice_channel = AsyncMock(return_value=True)
+        adapter._voice_text_channels = {}
+        adapter._voice_sources = {}
+        adapter._client = MagicMock()
+        adapter._client.get_channel.return_value = SimpleNamespace(
+            id=99, guild=SimpleNamespace(id=222), name="wrong-guild",
+        )
+        runner.adapters[Platform.DISCORD] = adapter
+
+        await runner._handle_voice_companion_join(
+            guild_id=111, user_id=42, text_channel_id=99,
+            voice_channel=SimpleNamespace(id=777, name="Focus"),
+        )
+
+        adapter.join_voice_channel.assert_not_awaited()
+        assert adapter._voice_text_channels == {}
+
+    @pytest.mark.asyncio
+    async def test_companion_move_event_targets_new_channel(self):
+        adapter = TestDiscordVoiceCompanion()._make_adapter()
+        callback = AsyncMock()
+        adapter._voice_companion_callback = callback
+        new_channel = SimpleNamespace(id=778, name="Other")
+        with patch("plugins.platforms.discord.adapter._read_voice_companion_config",
+                   return_value={"user_id": 42, "guild_id": 111, "text_channel_id": 99}):
+            await adapter._handle_voice_companion_state_update(
+                SimpleNamespace(id=42, guild=SimpleNamespace(id=111), display_name="Ryan"),
+                SimpleNamespace(channel=SimpleNamespace(id=777)),
+                SimpleNamespace(channel=new_channel),
+            )
+        callback.assert_awaited_once()
+        assert callback.await_args.kwargs["voice_channel"] is new_channel
+
+
 # =====================================================================
 # stream_tts_to_speaker functional tests
 # =====================================================================

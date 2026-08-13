@@ -346,6 +346,26 @@ Use these in the Discord text channel where the bot is present:
 You must be in a voice channel before running `/voice join`. The bot joins the same VC you're in.
 :::
 
+### Voice Companion (auto-follow)
+
+For a personal Discord server, Voice Companion removes the `/voice join` step: Hermes enters the configured user's voice channel automatically, follows that user when they switch voice channels, and keeps the ordinary `/voice leave` command as a manual escape hatch.
+
+It is deliberately **off by default** and must bind one Discord user, one guild, and one text channel. Use the numeric IDs (enable Discord Developer Mode, then right-click → **Copy User ID / Copy Server ID / Copy Channel ID**):
+
+```yaml
+# ~/.hermes/config.yaml
+discord:
+  voice_companion:
+    enabled: true
+    user_id: "YOUR_DISCORD_USER_ID"
+    guild_id: "YOUR_DISCORD_SERVER_ID"
+    text_channel_id: "YOUR_DISCORD_TEXT_CHANNEL_ID"
+```
+
+The text channel must be in the configured guild. It anchors transcripts, the agent session, and text copies of spoken replies. The configured companion user must also be permitted by `DISCORD_ALLOWED_USERS`; Voice Companion never broadens the existing voice access allowlist. Restart the gateway after changing this setting.
+
+With this enabled, **joining a Discord voice channel is the trigger**—there is no bot-specific keyboard shortcut and no slash command to enter first. Leaving the channel does not force an immediate bot disconnect; the normal voice inactivity timeout handles cleanup.
+
 ### How It Works
 
 When the bot joins a voice channel, it:

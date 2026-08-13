@@ -149,6 +149,39 @@ def _clean_discord_id(entry: str) -> str:
     return entry.strip()
 
 
+def _read_voice_companion_config() -> Optional[Dict[str, int]]:
+    """Return explicit Voice Companion settings, or ``None`` when disabled.
+
+    This deliberately does *not* inherit DISCORD_ALLOWED_USERS: automatic voice
+    joins are a privileged, opt-in action and must name one numeric user, guild,
+    and text channel in ``discord.voice_companion``.
+    """
+    def positive_snowflake(value: Any) -> Optional[int]:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value if value > 0 else None
+        if isinstance(value, str) and value.strip().isdigit():
+            parsed = int(value.strip())
+            return parsed if parsed > 0 else None
+        return None
+
+    try:
+        from hermes_cli.config import read_raw_config
+        raw = read_raw_config()
+        companion = raw.get("discord", {}).get("voice_companion", {})
+        if not isinstance(companion, dict) or companion.get("enabled") is not True:
+            return None
+        user_id = positive_snowflake(companion.get("user_id"))
+        guild_id = positive_snowflake(companion.get("guild_id"))
+        text_channel_id = positive_snowflake(companion.get("text_channel_id"))
+        if user_id is None or guild_id is None or text_channel_id is None:
+            return None
+        return {"user_id": user_id, "guild_id": guild_id, "text_channel_id": text_channel_id}
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available.
 
@@ -645,6 +678,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
+        self._voice_companion_callback: Optional[Callable] = None  # set by run.py
         self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
         # Resolves the current voice-reply mode ("off"|"voice_only"|"all") for a
         # linked text-channel id; set by run.py. Lets the inactivity timer leave
@@ -971,34 +1005,26 @@ class DiscordAdapter(BasePlatformAdapter):
 
             @self._client.event
             async def on_voice_state_update(member, before, after):
-                """Track voice channel join/leave events."""
-                # Only track channels where the bot is connected
-                bot_guild_ids = set(adapter_self._voice_clients.keys())
-                if not bot_guild_ids:
-                    return
-                guild_id = member.guild.id
-                if guild_id not in bot_guild_ids:
-                    return
-                # Ignore the bot itself
+                """Track voice state and trigger the explicit Voice Companion."""
+                # Ignore the bot itself. Companion logic must run even before the
+                # bot has a voice client, otherwise it could never auto-join.
                 if member == adapter_self._client.user:
                     return
+                await adapter_self._handle_voice_companion_state_update(member, before, after)
 
+                # Preserve connection-state diagnostics for active manual or
+                # companion voice sessions.
+                guild_id = member.guild.id
+                if guild_id not in adapter_self._voice_clients:
+                    return
                 joined = before.channel is None and after.channel is not None
                 left = before.channel is not None and after.channel is None
-                switched = (
-                    before.channel is not None
-                    and after.channel is not None
-                    and before.channel != after.channel
-                )
-
+                switched = before.channel is not None and after.channel is not None and before.channel != after.channel
                 if joined or left or switched:
                     logger.info(
                         "Voice state: %s (%d) %s (guild %d)",
-                        member.display_name,
-                        member.id,
-                        "joined " + after.channel.name if joined
-                        else "left " + before.channel.name if left
-                        else f"moved {before.channel.name} -> {after.channel.name}",
+                        member.display_name, member.id,
+                        "joined " + after.channel.name if joined else "left " + before.channel.name if left else f"moved {before.channel.name} -> {after.channel.name}",
                         guild_id,
                     )
 
@@ -2230,6 +2256,35 @@ class DiscordAdapter(BasePlatformAdapter):
         """True when a continuous mixer is installed for this guild."""
         mixers = getattr(self, "_voice_mixers", None)
         return bool(mixers) and mixers.get(guild_id) is not None
+
+    async def _handle_voice_companion_state_update(self, member, before, after) -> None:
+        """Auto-join or move for the configured companion user's VC changes."""
+        companion = _read_voice_companion_config()
+        if (
+            companion is None
+            or member.id != companion["user_id"]
+            or member.guild.id != companion["guild_id"]
+        ):
+            return
+        # Leaving must not turn into an immediate forced disconnect: existing
+        # inactivity handling remains responsible for cleanup.
+        if after.channel is None or after.channel == before.channel:
+            return
+        callback = self._voice_companion_callback
+        if callback is None:
+            logger.warning("Voice Companion is enabled but the gateway callback is unavailable")
+            return
+        try:
+            await callback(
+                guild_id=member.guild.id,
+                user_id=member.id,
+                text_channel_id=companion["text_channel_id"],
+                voice_channel=after.channel,
+            )
+        except Exception:
+            logger.exception(
+                "Voice Companion failed for user=%s guild=%s", member.id, member.guild.id
+            )
 
     async def join_voice_channel(self, channel) -> bool:
         """Join a Discord voice channel. Returns True on success."""
