@@ -37,7 +37,7 @@ except Exception:
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock
-from plugins.platforms.discord.adapter import VoiceReceiver
+from plugins.platforms.discord.adapter import DiscordAdapter, VoiceReceiver
 
 
 # ---------------------------------------------------------------------------
@@ -360,6 +360,28 @@ class TestRTPPaddingStrip:
         # Both must yield identical decoded PCM — ext data and padding both
         # stripped before opus decode.
         assert bytes(recv_plain._buffers[100]) == bytes(recv_ext_pad._buffers[100])
+
+
+class TestVoiceInputNoiseGate:
+    """Audio screening before an utterance is sent to STT."""
+
+    def test_drops_digital_silence_even_when_packet_duration_is_long_enough(self):
+        """Discord silence frames must not be treated as a spoken utterance."""
+        pcm_silence = b"\x00\x00" * (VoiceReceiver.SAMPLE_RATE * VoiceReceiver.CHANNELS)
+
+        assert VoiceReceiver.has_probable_speech(pcm_silence) is False
+
+    @pytest.mark.asyncio
+    async def test_silence_never_reaches_stt(self, monkeypatch):
+        """The Discord processing path returns before WAV/STT work for silence."""
+        pcm_silence = b"\x00\x00" * (VoiceReceiver.SAMPLE_RATE * VoiceReceiver.CHANNELS)
+        adapter = object.__new__(DiscordAdapter)
+
+        def should_not_convert(*args, **kwargs):
+            raise AssertionError("silence must be dropped before PCM-to-WAV conversion")
+
+        monkeypatch.setattr(VoiceReceiver, "pcm_to_wav", should_not_convert)
+        await adapter._process_voice_input(1, 42, pcm_silence)
 
 
 class TestFullVoiceFlow:

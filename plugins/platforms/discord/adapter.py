@@ -260,6 +260,9 @@ class VoiceReceiver:
     MIN_SPEECH_DURATION = 0.5  # minimum seconds to process (skip noise)
     SAMPLE_RATE = 48000        # Discord native rate
     CHANNELS = 2               # Discord sends stereo
+    MIN_RMS = 250              # discard quiet digital/room noise before STT
+    VAD_MODE = 1               # matches proven Voice Claude Code general-room setting
+    MIN_SPEECH_FRAME_RATIO = 0.25
 
     def __init__(self, voice_client, allowed_user_ids: set = None):
         self._vc = voice_client
@@ -538,6 +541,51 @@ class VoiceReceiver:
         except Exception:
             pass
         return 0
+
+    @classmethod
+    def has_probable_speech(cls, pcm_data: bytes) -> bool:
+        """Reject silent/noise-only Discord utterances before invoking STT.
+
+        Discord packet delivery denotes transport activity, not human speech.
+        Screen the decoded 48 kHz stereo PCM with a cheap RMS floor first, then
+        WebRTC VAD on 20 ms mono frames.  The RMS fallback remains conservative
+        if the optional voice dependency is unavailable at runtime.
+        """
+        if not pcm_data:
+            return False
+
+        import audioop
+
+        try:
+            if audioop.rms(pcm_data, 2) < cls.MIN_RMS:
+                return False
+        except (audioop.error, ValueError):
+            return False
+
+        try:
+            import webrtcvad
+        except ImportError:
+            logger.warning("webrtcvad unavailable; applying RMS-only Discord voice gate")
+            return True
+
+        frame_samples = cls.SAMPLE_RATE // 50  # 20 ms
+        frame_bytes = frame_samples * cls.CHANNELS * 2
+        speech_frames = 0
+        total_frames = 0
+        vad = webrtcvad.Vad(cls.VAD_MODE)
+        for offset in range(0, len(pcm_data) - frame_bytes + 1, frame_bytes):
+            stereo_frame = pcm_data[offset:offset + frame_bytes]
+            # WebRTC VAD expects mono PCM. Keep the left channel from Discord's
+            # decoded interleaved stereo stream; both channels carry the same
+            # participant audio in normal voice-channel input.
+            mono_frame = audioop.tomono(stereo_frame, 2, 1, 0)
+            total_frames += 1
+            try:
+                speech_frames += int(vad.is_speech(mono_frame, cls.SAMPLE_RATE))
+            except (ValueError, webrtcvad.Error):
+                return False
+
+        return bool(total_frames) and speech_frames / total_frames >= cls.MIN_SPEECH_FRAME_RATIO
 
     def check_silence(self) -> list:
         """Return list of (user_id, pcm_bytes) for completed utterances."""
@@ -2620,8 +2668,15 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("Voice listen loop error: %s", e, exc_info=True)
 
     async def _process_voice_input(self, guild_id: int, user_id: int, pcm_data: bytes):
-        """Convert PCM -> WAV -> STT -> callback."""
+        """Screen PCM -> convert to WAV -> STT -> callback."""
         from tools.voice_mode import is_whisper_hallucination
+
+        # A Discord SPEAKING packet means only that audio transport is active.
+        # Reject room noise and silence before paying for STT (and before an ASR
+        # model can invent a transcript).
+        if not VoiceReceiver.has_probable_speech(pcm_data):
+            logger.info("Dropped non-speech Discord input before STT (user=%d)", user_id)
+            return
 
         tmp_f = tempfile.NamedTemporaryFile(suffix=".wav", prefix="vc_listen_", delete=False)
         wav_path = tmp_f.name
