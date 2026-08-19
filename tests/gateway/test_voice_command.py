@@ -1233,7 +1233,10 @@ class TestDiscordVoiceChannelMethods:
 
         pcm_data = b"\x00" * 96000
 
-        with patch("plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav"), \
+        # This test covers the post-gate STT/callback path. The dedicated
+        # integration tests cover actual PCM speech/noise classification.
+        with patch("plugins.platforms.discord.adapter.VoiceReceiver.has_probable_speech", return_value=True), \
+             patch("plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav"), \
              patch("tools.transcription_tools.transcribe_audio",
                    return_value={"success": True, "transcript": "Hello"}), \
              patch("tools.voice_mode.is_whisper_hallucination", return_value=False):
@@ -1248,7 +1251,8 @@ class TestDiscordVoiceChannelMethods:
         callback = AsyncMock()
         adapter._voice_input_callback = callback
 
-        with patch("plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav"), \
+        with patch("plugins.platforms.discord.adapter.VoiceReceiver.has_probable_speech", return_value=True), \
+             patch("plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav"), \
              patch("tools.transcription_tools.transcribe_audio",
                    return_value={"success": True, "transcript": "Thank you."}), \
              patch("tools.voice_mode.is_whisper_hallucination", return_value=True):
@@ -1263,7 +1267,8 @@ class TestDiscordVoiceChannelMethods:
         callback = AsyncMock()
         adapter._voice_input_callback = callback
 
-        with patch("plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav"), \
+        with patch("plugins.platforms.discord.adapter.VoiceReceiver.has_probable_speech", return_value=True), \
+             patch("plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav"), \
              patch("tools.transcription_tools.transcribe_audio",
                    return_value={"success": False, "error": "API error"}):
             await adapter._process_voice_input(111, 42, b"\x00" * 96000)
@@ -1276,7 +1281,8 @@ class TestDiscordVoiceChannelMethods:
         adapter = self._make_adapter()
         adapter._voice_input_callback = AsyncMock()
 
-        with patch("plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav",
+        with patch("plugins.platforms.discord.adapter.VoiceReceiver.has_probable_speech", return_value=True), \
+             patch("plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav",
                    side_effect=RuntimeError("ffmpeg not found")):
             await adapter._process_voice_input(111, 42, b"\x00" * 96000)
         # Should not raise
