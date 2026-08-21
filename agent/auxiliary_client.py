@@ -215,20 +215,21 @@ _CODEX_GPT55_COMPACTION_THRESHOLD = 0.85
 
 
 def _is_codex_gpt55(model: Optional[str], provider: Optional[str] = None) -> bool:
-    """True for gpt-5.5 accessed through the ChatGPT Codex OAuth backend.
+    """True for the 5.5/5.6 families accessed through ChatGPT Codex OAuth.
 
-    Matches only the Codex OAuth route (provider ``openai-codex``), not the
-    direct OpenAI API, OpenRouter, or GitHub Copilot paths — those expose a
-    larger context window for the same slug and must keep the user's default
-    compaction threshold. ``gpt-5.5-pro`` and dated snapshots
-    (``gpt-5.5-2026-04-23``) are matched via prefix so the override tracks the
-    family without re-listing every variant.
+    The function name and its ``codex_gpt55_autoraise`` config key are retained
+    for backward compatibility.  Both families currently advertise a 272K
+    context window on the Codex OAuth route and therefore need the same delayed
+    compaction threshold.
     """
     prov = (provider or "").strip().lower()
     if prov != "openai-codex":
         return False
     bare = (model or "").strip().lower().rsplit("/", 1)[-1]
-    return bare == "gpt-5.5" or bare.startswith("gpt-5.5-") or bare.startswith("gpt-5.5.")
+    return any(
+        bare == family or bare.startswith(f"{family}-") or bare.startswith(f"{family}.")
+        for family in ("gpt-5.5", "gpt-5.6")
+    )
 
 
 def _fixed_temperature_for_model(

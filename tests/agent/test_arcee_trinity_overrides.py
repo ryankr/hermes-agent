@@ -130,6 +130,11 @@ def test_compression_threshold_for_codex_gpt55() -> None:
     assert _compression_threshold_for_model("openai/gpt-5.5", "openai-codex") == 0.85
 
 
+def test_compression_threshold_for_codex_gpt56_272k_window() -> None:
+    """Current Codex OAuth gpt-5.6 models should use the full advertised window."""
+    assert _compression_threshold_for_model("gpt-5.6-terra", "openai-codex") == 0.85
+
+
 def test_compression_threshold_codex_gpt55_other_routes_unaffected() -> None:
     # Same slug, different route → no override (keep the user's config value).
     assert _compression_threshold_for_model("gpt-5.5", "openrouter") is None
