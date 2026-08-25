@@ -3656,6 +3656,35 @@ class TestSlashEphemeralAck:
         adapter._app.client.chat_postMessage.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_send_falls_back_to_channel_post_when_thread_anchor_is_not_replyable(self, adapter):
+        """A non-replyable Slack thread anchor must not discard the final response."""
+        from types import SimpleNamespace
+
+        class CannotReplyToMessage(Exception):
+            def __init__(self):
+                self.response = SimpleNamespace(
+                    data={"ok": False, "error": "cannot_reply_to_message"}
+                )
+                super().__init__("Slack API cannot_reply_to_message")
+
+        adapter._app.client.chat_postMessage = AsyncMock(
+            side_effect=[CannotReplyToMessage(), {"ts": "1234.5678", "ok": True}]
+        )
+
+        result = await adapter.send(
+            "C_NORMAL",
+            "Hello world",
+            reply_to="bad-thread-anchor",
+        )
+
+        assert result.success is True
+        assert result.message_id == "1234.5678"
+        assert adapter._app.client.chat_postMessage.await_count == 2
+        first_call, second_call = adapter._app.client.chat_postMessage.await_args_list
+        assert first_call.kwargs["thread_ts"] == "bad-thread-anchor"
+        assert "thread_ts" not in second_call.kwargs
+
+    @pytest.mark.asyncio
     async def test_send_slash_ephemeral_fallback_on_post_failure(self, adapter):
         """_send_slash_ephemeral returns success=True even if POST fails."""
         import time
