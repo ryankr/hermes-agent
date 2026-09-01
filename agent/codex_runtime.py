@@ -25,6 +25,24 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _configured_codex_home() -> str | None:
+    """Return the optional, profile-local Codex state directory.
+
+    The app-server subprocess needs to write its SQLite state.  Gateway
+    services are commonly sandboxed away from ``~/.codex`` while still being
+    allowed to write under ``HERMES_HOME``.  A configured home keeps the
+    app-server usable in that setup without changing the user's real HOME.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        model_cfg = load_config().get("model") or {}
+    except Exception:
+        return ""
+    raw = str(model_cfg.get("codex_home") or "").strip()
+    return os.path.expanduser(raw) if raw else ""
+
+
 def _coerce_usage_int(value: Any) -> int:
     if isinstance(value, bool):
         return 0
@@ -206,6 +224,7 @@ def run_codex_app_server_turn(
             approval_callback = None
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
+            codex_home=_configured_codex_home() or None,
             approval_callback=approval_callback,
         )
 
