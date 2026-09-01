@@ -1176,7 +1176,29 @@ class SlackAdapter(BasePlatformAdapter):
                     if broadcast and i == 0:
                         kwargs["reply_broadcast"] = True
 
-                last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+                try:
+                    last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+                except Exception as exc:
+                    response = getattr(exc, "response", None)
+                    response_data = getattr(response, "data", None) or {}
+                    if thread_ts and response_data.get("error") == "cannot_reply_to_message":
+                        # Some Slack message types can appear as a thread anchor but
+                        # cannot accept replies. Deliver the completed answer in the
+                        # channel instead of silently dropping it.
+                        logger.warning(
+                            "[Slack] Thread anchor %s in channel %s is not replyable; "
+                            "falling back to a channel post",
+                            thread_ts,
+                            chat_id,
+                        )
+                        thread_ts = None
+                        kwargs.pop("thread_ts", None)
+                        kwargs.pop("reply_broadcast", None)
+                        last_result = await self._get_client(chat_id).chat_postMessage(
+                            **kwargs
+                        )
+                    else:
+                        raise
 
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:

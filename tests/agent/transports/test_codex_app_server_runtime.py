@@ -15,6 +15,22 @@ from hermes_cli.runtime_provider import (
 )
 
 
+def test_configured_codex_home_reads_model_setting(monkeypatch) -> None:
+    """The gateway can put Codex state in its writable Hermes home."""
+    from agent import codex_runtime
+    import hermes_cli.config
+
+    monkeypatch.setattr(
+        hermes_cli.config,
+        "load_config",
+        lambda: {"model": {"codex_home": "~/.hermes/.codex-app-server"}},
+    )
+
+    assert codex_runtime._configured_codex_home().endswith(
+        "/.hermes/.codex-app-server"
+    )
+
+
 class TestApiModeRegistration:
     """The new api_mode must be registered or downstream parsing rejects it."""
 
