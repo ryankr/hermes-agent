@@ -82,6 +82,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`box`](/docs/user-guide/skills/bundled/productivity/productivity-box) | Box manages cloud files, sharing, search, and metadata. | `productivity\box` |
 | [`document-to-action-items`](/docs/user-guide/skills/bundled/productivity/productivity-document-to-action-items) | Extract cited obligations, deadlines, tasks from documents. | `productivity\document-to-action-items` |
 | [`docx`](/docs/user-guide/skills/bundled/productivity/productivity-docx) | Create, read, edit, template, and review Word .docx files. | `productivity\docx` |
+| [`evidence-first-delivery`](/docs/user-guide/skills/bundled/productivity/productivity-evidence-first-delivery) | Deliver multi-step work with verified outcomes. | `productivity\evidence-first-delivery` |
 | [`google-workspace`](/docs/user-guide/skills/bundled/productivity/productivity-google-workspace) | Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python. | `productivity\google-workspace` |
 | [`maps`](/docs/user-guide/skills/bundled/productivity/productivity-maps) | Geocode, POIs, routes, timezones via OpenStreetMap/OSRM. | `productivity\maps` |
 | [`meeting-action-items`](/docs/user-guide/skills/bundled/productivity/productivity-meeting-action-items) | Turn meeting notes into cited decisions, owners, tickets. | `productivity\meeting-action-items` |
