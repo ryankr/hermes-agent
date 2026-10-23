@@ -3,7 +3,8 @@
   "use strict";
 
   const SDK = window.__HERMES_PLUGIN_SDK__;
-  if (!SDK) return;
+  const registry = window.__HERMES_PLUGINS__;
+  if (!SDK || !registry || typeof registry.register !== "function") return;
   const { React } = SDK;
   const h = React.createElement;
   const { Card, CardContent, Badge, Button } = SDK.components;
@@ -32,12 +33,15 @@
           return h(Badge, { key: status, variant: "secondary" }, `${status}: ${board.counts[status]}`);
         })),
       FOCUS.map(function (status) {
-        const tasks = (board.focus && board.focus[status]) || [];
-        if (!tasks.length) return null;
+        const focus = (board.focus && board.focus[status]) || { tasks: [], truncated: false };
+        const tasks = focus.tasks || [];
+        if (!tasks.length && !focus.truncated) return null;
         return h("section", { key: status, className: "mb-3", "aria-label": `${status} tasks` },
           h("h3", { className: "text-sm font-medium capitalize" }, status),
           h("ul", { className: "space-y-2", "aria-label": `${status} focus cards` },
-            tasks.map(function (task) { return h(TaskCard, { key: task.id, task: task }); })));
+            tasks.map(function (task) { return h(TaskCard, { key: task.id, task: task }); })),
+          focus.truncated ? h("p", { className: "mt-2 text-xs text-muted-foreground", role: "status" },
+            `Additional ${status} tasks are not shown.`) : null);
       })));
   }
 
@@ -68,5 +72,5 @@
       (data.boards || []).map(function (board) { return h(Board, { key: board.slug, board: board }); }));
   }
 
-  SDK.registerPage({ path: "/work-portfolio", component: WorkPortfolio });
+  registry.register("work-portfolio", WorkPortfolio);
 }());

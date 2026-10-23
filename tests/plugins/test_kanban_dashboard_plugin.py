@@ -28,8 +28,8 @@ from hermes_cli import kanban_db_connect as kbc
 # Fixtures
 # ---------------------------------------------------------------------------
 
-def _load_plugin_router():
-    """Dynamically load plugins/kanban/dashboard/plugin_api.py and return its router."""
+def _load_plugin_module():
+    """Dynamically load plugins/kanban/dashboard/plugin_api.py."""
     repo_root = Path(__file__).resolve().parents[2]
     plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
     assert plugin_file.exists(), f"plugin file missing: {plugin_file}"
@@ -41,7 +41,11 @@ def _load_plugin_router():
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
-    return mod.router
+    return mod
+
+
+def _load_plugin_router():
+    return _load_plugin_module().router
 
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
@@ -56,7 +60,9 @@ def kanban_home(tmp_path, monkeypatch):
 @pytest.fixture
 def client(kanban_home):
     app = FastAPI()
-    app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
+    plugin = _load_plugin_module()
+    app.include_router(plugin.router, prefix="/api/plugins/kanban")
+    app.state.kanban_dashboard_plugin = plugin
     return TestClient(app)
 
 # ---------------------------------------------------------------------------
@@ -1312,10 +1318,12 @@ def test_overview_aggregates_boards_without_mutating_current_board(client):
     assert "archived" not in boards["beta"]["counts"]
     assert boards["beta"]["counts"]["blocked"] == 1
     assert boards["beta"]["unknown_statuses"] == {"future_state": 1}
-    assert [task["title"] for task in boards["alpha"]["focus"]["running"]] == [
+    running_focus = boards["alpha"]["focus"]["running"]
+    assert [task["title"] for task in running_focus["tasks"]] == [
         "high-first", "high-second", "sixth", "seventh", "eighth",
     ]
-    blocked_card = boards["beta"]["focus"]["blocked"][0]
+    assert running_focus["truncated"] is False
+    blocked_card = boards["beta"]["focus"]["blocked"]["tasks"][0]
     assert {"id", "title", "status", "assignee", "priority", "created_at"} <= blocked_card.keys()
     assert blocked_card["id"] == blocked
     assert "body" not in blocked_card and "result" not in blocked_card
@@ -1340,10 +1348,95 @@ def test_overview_reports_missing_board_database_as_partial(client):
     assert "missing" not in {board["slug"] for board in payload["boards"]}
 
 
+def test_overview_focus_limit_is_ordered_and_reports_per_status_truncation(client):
+    kb.create_board("alpha")
+    with kbc.connect(board="alpha") as conn:
+        task_ids = [
+            kb.create_task(conn, title=title, priority=priority)
+            for title, priority in (("low", 1), ("first", 9), ("second", 9))
+        ]
+    for task_id in task_ids:
+        _set_task_status("alpha", task_id, "running")
+    for index, task_id in enumerate(task_ids, start=1):
+        _set_task_created_at("alpha", task_id, index)
+
+    one = client.get("/api/plugins/kanban/overview?focus_limit=1")
+    twenty = client.get("/api/plugins/kanban/overview?focus_limit=20")
+
+    assert one.status_code == 200, one.text
+    one_focus = next(board for board in one.json()["boards"] if board["slug"] == "alpha")["focus"]
+    assert [task["title"] for task in one_focus["running"]["tasks"]] == ["first"]
+    assert one_focus["running"]["truncated"] is True
+    assert one_focus["blocked"] == {"tasks": [], "truncated": False}
+    assert twenty.status_code == 200, twenty.text
+    twenty_focus = next(board for board in twenty.json()["boards"] if board["slug"] == "alpha")["focus"]
+    assert [task["title"] for task in twenty_focus["running"]["tasks"]] == ["first", "second", "low"]
+    assert twenty_focus["running"]["truncated"] is False
+    assert client.get("/api/plugins/kanban/overview?focus_limit=0").status_code == 422
+    assert client.get("/api/plugins/kanban/overview?focus_limit=21").status_code == 422
+
+
+def test_overview_is_strictly_read_only(client, monkeypatch):
+    kb.create_board("alpha")
+    with kbc.connect(board="alpha") as conn:
+        kb.create_task(conn, title="snapshot")
+    kb.set_current_board("alpha")
+    plugin = client.app.state.kanban_dashboard_plugin
+    db_paths = [kb.kanban_db_path(), kb.kanban_db_path(board="alpha")]
+    before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in db_paths}
+    current = kb.current_board_path()
+    current_before = (current.read_bytes(), current.stat().st_mtime_ns)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("overview must not use writable Kanban paths")
+
+    monkeypatch.setattr(plugin.kbc, "connect", forbidden)
+    monkeypatch.setattr(plugin.kanban_db, "init_db", forbidden)
+    monkeypatch.setattr(plugin.kanban_db, "create_task", forbidden)
+    monkeypatch.setattr(plugin.kanban_db, "set_current_board", forbidden)
+
+    response = client.get("/api/plugins/kanban/overview")
+
+    assert response.status_code == 200, response.text
+    assert kb.get_current_board() == "alpha"
+    assert {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in db_paths} == before
+    assert (current.read_bytes(), current.stat().st_mtime_ns) == current_before
+
+
+def test_overview_sanitizes_malformed_board_database_as_partial(client):
+    kb.create_board("healthy")
+    with kbc.connect(board="healthy") as conn:
+        kb.create_task(conn, title="healthy")
+    kb.create_board("malformed")
+    broken_path = kb.kanban_db_path(board="malformed")
+    broken_path.unlink()
+    broken_path.write_text("not a sqlite database", encoding="utf-8")
+
+    response = client.get("/api/plugins/kanban/overview")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["outcome"] == "partial"
+    failure = next(item for item in payload["failures"] if item["board"] == "malformed")
+    assert failure == {"board": "malformed", "code": "schema_unavailable", "message": "Board data is unavailable."}
+    assert str(broken_path) not in response.text
+    assert "file is not a database" not in response.text.lower()
+
+
 def test_overview_rejects_fenced_worker_context(client, monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fenced")
 
     response = client.get("/api/plugins/kanban/overview")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Portfolio overview is unavailable in a Kanban worker context."
+
+
+def test_overview_rejects_delegated_child_context(client):
+    from agent.delegation_context import delegated_child_context
+
+    with delegated_child_context():
+        response = client.get("/api/plugins/kanban/overview")
 
     assert response.status_code == 409
     assert response.json()["detail"] == "Portfolio overview is unavailable in a Kanban worker context."

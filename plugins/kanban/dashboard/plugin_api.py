@@ -330,13 +330,16 @@ def _portfolio_snapshot(board: dict[str, Any], focus_limit: int) -> dict[str, An
         if "project_id" in columns:
             select_fields.append("project_id")
         selected = ", ".join(select_fields)
-        focus = {status: [] for status in _PORTFOLIO_FOCUS_STATUSES}
+        focus: dict[str, dict[str, Any]] = {}
         for status_name in _PORTFOLIO_FOCUS_STATUSES:
             rows = conn.execute(
                 f"SELECT {selected} FROM tasks WHERE status = ? ORDER BY priority DESC, created_at ASC, id ASC LIMIT ?",
-                (status_name, focus_limit),
+                (status_name, focus_limit + 1),
             ).fetchall()
-            focus[status_name] = [{key: row[key] for key in select_fields if row[key] is not None} for row in rows]
+            focus[status_name] = {
+                "tasks": [{key: row[key] for key in select_fields if row[key] is not None} for row in rows[:focus_limit]],
+                "truncated": len(rows) > focus_limit,
+            }
     snapshot = {
         "slug": slug,
         "name": board.get("name") or slug,
