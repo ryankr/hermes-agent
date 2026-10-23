@@ -1,0 +1,12 @@
+{
+  "name": "work-portfolio",
+  "label": "Work Portfolio",
+  "description": "Read-only cross-board Kanban portfolio overview.",
+  "icon": "BriefcaseBusiness",
+  "version": "1.0.0",
+  "tab": {
+    "path": "/work-portfolio",
+    "position": "after:kanban"
+  },
+  "entry": "dist/index.js"
+}
