@@ -12,6 +12,14 @@
   const API = "/api/plugins/kanban/overview";
   const FOCUS = ["running", "blocked", "review", "scheduled", "ready"];
 
+  function errorDetails(err) {
+    return err && err.message ? err.message : "Could not load portfolio overview.";
+  }
+
+  function missingKanbanPlugin(err) {
+    return !!err && Number(err.status) === 404;
+  }
+
   function TaskCard(props) {
     const task = props.task;
     return h("li", { className: "space-y-1 rounded border p-2" },
@@ -47,15 +55,23 @@
 
   function WorkPortfolio() {
     const [data, setData] = useState(null);
-    const [error, setError] = useState("");
+    const [error, setError] = useState(null);
     const load = useCallback(function () {
-      setError("");
+      setError(null);
       return SDK.fetchJSON(API).then(setData).catch(function (err) {
-        setError(err && err.message ? err.message : "Could not load portfolio overview.");
+        setError({ details: errorDetails(err), kanbanPluginMissing: missingKanbanPlugin(err) });
       });
     }, []);
     useEffect(function () { load(); }, [load]);
-    if (error) return h("section", { role: "alert", className: "p-4" }, error);
+    if (error) return h("section", { role: "alert", className: "p-4" },
+      h("h1", { className: "text-lg font-semibold" }, "Work Portfolio cannot load"),
+      error.kanbanPluginMissing
+        ? h("p", null, "Work Portfolio requires the Kanban dashboard plugin to be enabled.")
+        : h("p", null, "The portfolio overview request failed. Check the error details and try again."),
+      h("details", { className: "mt-2" },
+        h("summary", null, "Technical details"),
+        h("pre", { className: "mt-2 whitespace-pre-wrap" }, error.details)),
+      h(Button, { type: "button", className: "mt-3", onClick: load }, "Retry"));
     if (!data) return h("p", { className: "p-4", "aria-live": "polite" }, "Loading portfolio overview…");
     return h("main", { className: "p-4", "aria-labelledby": "work-portfolio-title" },
       h("div", { className: "mb-4 flex items-center justify-between gap-3" },

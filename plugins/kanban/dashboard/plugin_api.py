@@ -314,32 +314,41 @@ def _portfolio_snapshot(board: dict[str, Any], focus_limit: int) -> dict[str, An
         raise FileNotFoundError
     with closing(_portfolio_db_connection(path)) as conn:
         conn.row_factory = sqlite3.Row
-        columns = _portfolio_task_columns(conn)
-        required = {"id", "title", "status", "assignee", "priority", "created_at", "started_at"}
-        if not required.issubset(columns):
-            raise sqlite3.DatabaseError("tasks schema is unavailable")
-        canonical = {status: 0 for status in BOARD_COLUMNS if status != "archived"}
-        unknown: dict[str, int] = {}
-        for row in conn.execute("SELECT status, COUNT(*) AS n FROM tasks WHERE status != 'archived' GROUP BY status"):
-            status_name, count = str(row["status"]), int(row["n"])
-            if status_name in canonical:
-                canonical[status_name] = count
-            else:
-                unknown[status_name] = count
-        select_fields = ["id", "title", "status", "assignee", "priority", "created_at", "started_at"]
-        if "project_id" in columns:
-            select_fields.append("project_id")
-        selected = ", ".join(select_fields)
-        focus: dict[str, dict[str, Any]] = {}
-        for status_name in _PORTFOLIO_FOCUS_STATUSES:
-            rows = conn.execute(
-                f"SELECT {selected} FROM tasks WHERE status = ? ORDER BY priority DESC, created_at ASC, id ASC LIMIT ?",
-                (status_name, focus_limit + 1),
-            ).fetchall()
-            focus[status_name] = {
-                "tasks": [{key: row[key] for key in select_fields if row[key] is not None} for row in rows[:focus_limit]],
-                "truncated": len(rows) > focus_limit,
-            }
+        begun = False
+        try:
+            # Keep schema/count/focus reads on one short, board-local snapshot.
+            # This remains explicitly non-atomic across separate board databases.
+            conn.execute("BEGIN")
+            begun = True
+            columns = _portfolio_task_columns(conn)
+            required = {"id", "title", "status", "assignee", "priority", "created_at", "started_at"}
+            if not required.issubset(columns):
+                raise sqlite3.DatabaseError("tasks schema is unavailable")
+            canonical = {status: 0 for status in BOARD_COLUMNS if status != "archived"}
+            unknown: dict[str, int] = {}
+            for row in conn.execute("SELECT status, COUNT(*) AS n FROM tasks WHERE status != 'archived' GROUP BY status"):
+                status_name, count = str(row["status"]), int(row["n"])
+                if status_name in canonical:
+                    canonical[status_name] = count
+                else:
+                    unknown[status_name] = count
+            select_fields = ["id", "title", "status", "assignee", "priority", "created_at", "started_at"]
+            if "project_id" in columns:
+                select_fields.append("project_id")
+            selected = ", ".join(select_fields)
+            focus: dict[str, dict[str, Any]] = {}
+            for status_name in _PORTFOLIO_FOCUS_STATUSES:
+                rows = conn.execute(
+                    f"SELECT {selected} FROM tasks WHERE status = ? ORDER BY priority DESC, created_at ASC, id ASC LIMIT ?",
+                    (status_name, focus_limit + 1),
+                ).fetchall()
+                focus[status_name] = {
+                    "tasks": [{key: row[key] for key in select_fields if row[key] is not None} for row in rows[:focus_limit]],
+                    "truncated": len(rows) > focus_limit,
+                }
+        finally:
+            if begun:
+                conn.rollback()
     snapshot = {
         "slug": slug,
         "name": board.get("name") or slug,

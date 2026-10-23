@@ -1403,6 +1403,35 @@ def test_overview_is_strictly_read_only(client, monkeypatch):
     assert (current.read_bytes(), current.stat().st_mtime_ns) == current_before
 
 
+def test_overview_uses_a_short_read_transaction_per_board(client, monkeypatch):
+    """Schema, count, and focus reads share a board-local snapshot only."""
+    kb.create_board("alpha")
+    with kbc.connect(board="alpha") as conn:
+        kb.create_task(conn, title="snapshot")
+    plugin = client.app.state.kanban_dashboard_plugin
+    original_connect = plugin._portfolio_db_connection
+    statements: list[str] = []
+
+    def traced_connect(path):
+        conn = original_connect(path)
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    monkeypatch.setattr(plugin, "_portfolio_db_connection", traced_connect)
+
+    response = client.get("/api/plugins/kanban/overview")
+
+    assert response.status_code == 200, response.text
+    normalized = [statement.strip().upper() for statement in statements]
+    assert normalized.count("BEGIN") == 2
+    assert normalized.count("ROLLBACK") == 2
+    for begin, rollback in zip(
+        (index for index, statement in enumerate(normalized) if statement == "BEGIN"),
+        (index for index, statement in enumerate(normalized) if statement == "ROLLBACK"),
+    ):
+        assert begin < rollback
+
+
 def test_overview_sanitizes_malformed_board_database_as_partial(client):
     kb.create_board("healthy")
     with kbc.connect(board="healthy") as conn:
