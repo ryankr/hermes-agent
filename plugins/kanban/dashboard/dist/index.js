@@ -3667,7 +3667,12 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(finalPatch),
         }).then(function () { load(); props.onRefresh(); })
-          .catch(function (e) { setPatchErr(parseApiErrorMessage(e)); });
+          .catch(function (e) {
+            const message = parseApiErrorMessage(e);
+            setPatchErr(message);
+            if (opts && opts.onError) opts.onError(message);
+            return null;
+          });
       }
     };
 
@@ -4063,6 +4068,7 @@
         renderMarkdown: props.renderMarkdown,
         onPatch: props.onPatch,
       }),
+      h(SourceUrlEditor, { task: t, onPatch: props.onPatch }),
       h(DependencyEditor, {
         task: t,
         links, allTasks: props.allTasks,
@@ -4635,6 +4641,48 @@
           ? h(MarkdownBlock, { source: props.task.body, enabled: props.renderMarkdown })
           : h("div", { className: "text-xs text-muted-foreground italic" },
               tx(t, "noDescription", "— no description —")),
+    );
+  }
+
+  function SourceUrlEditor(props) {
+    const { t } = useI18n();
+    const [value, setValue] = useState(props.task.source_url || "");
+    const [error, setError] = useState(null);
+    useEffect(function () { setValue(props.task.source_url || ""); setError(null); }, [props.task.source_url]);
+    const save = function () {
+      const url = value.trim();
+      setError(null);
+      props.onPatch(url ? { source_url: url } : { clear_source_url: true }, { onError: setError });
+    };
+    const clear = function () {
+      setValue("");
+      setError(null);
+      props.onPatch({ clear_source_url: true }, { onError: setError });
+    };
+    const errorId = `source-url-error-${props.task.id}`;
+    return h("div", { className: "hermes-kanban-section" },
+      h("div", { className: "hermes-kanban-section-head" }, tx(t, "slackSourceUrl", "Slack source URL")),
+      h("div", { className: "flex flex-wrap items-center gap-2" },
+        h(Input, {
+          type: "url", value: value,
+          onChange: function (e) { setValue(e.target.value); setError(null); },
+          placeholder: "https://workspace.slack.com/archives/...",
+          className: "h-8 w-72 text-sm",
+          "aria-label": tx(t, "slackSourceUrl", "Slack source URL"),
+          "aria-describedby": error ? errorId : undefined,
+        }),
+        h(Button, { type: "button", size: "sm", onClick: save }, tx(t, "save", "Save")),
+        props.task.source_url ? h(Button, { type: "button", size: "sm", variant: "outline", onClick: clear },
+          tx(t, "clear", "Clear")) : null,
+      ),
+      error ? h("p", { id: errorId, role: "alert", className: "mt-1 text-xs text-destructive" }, error) : null,
+      props.task.source_url
+        ? h("a", {
+            href: props.task.source_url, target: "_blank", rel: "noopener noreferrer",
+            className: "mt-1 inline-block text-xs underline",
+          }, tx(t, "openSlackSource", "Open related Slack"))
+        : h("p", { className: "mt-1 text-xs text-muted-foreground" },
+            tx(t, "slackSourceNotRecorded", "Slack source not recorded")),
     );
   }
 

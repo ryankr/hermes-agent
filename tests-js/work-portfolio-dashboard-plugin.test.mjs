@@ -113,15 +113,19 @@ async function main() {
   await flush();
   let detailTree = detail.render();
   const card = detail.find(detailTree, (node) => node.type === "button" && /first/.test(detail.text(node)));
-  assert.ok(card, "focus task is a selectable button");
+  assert.ok(card, "focus task is an expandable button");
+  assert.equal(card.props["aria-expanded"], false);
   card.props.onClick();
   await flush();
   detailTree = detail.render();
   assert.deepEqual(calls, ["/api/plugins/kanban/overview", "/api/plugins/kanban/tasks/t1?board=alpha"]);
-  assert.match(detail.text(detailTree), /Task details/);
-  assert.match(detail.text(detailTree), /child latest/);
+  const expandedCard = detail.find(detailTree, (node) => node.type === "li" && /child latest/.test(detail.text(node)));
+  assert.ok(expandedCard, "details render inside the selected task card");
+  assert.equal(detail.find(detailTree, (node) => node.props && node.props.role === "dialog"), null, "no global detail panel is rendered");
+  const expandedButton = detail.find(expandedCard, (node) => node.type === "button" && /first/.test(detail.text(node)));
+  assert.equal(expandedButton.props["aria-expanded"], true);
   assert.doesNotMatch(detail.text(detailTree), /Slack source not recorded/);
-  const slack = detail.find(detailTree, (node) => node.type === "a" && detail.text(node) === "Open related Slack");
+  const slack = detail.find(expandedCard, (node) => node.type === "a" && detail.text(node) === "Open related Slack");
   assert.equal(slack.props.href, detailData.task.source_url);
   assert.equal(slack.props.target, "_blank");
   assert.equal(slack.props.rel, "noopener noreferrer");
@@ -158,39 +162,40 @@ async function main() {
   });
   race.render(); race.effects[0](); await flush();
   let raceTree = race.render();
-  race.find(raceTree, (node) => node.type === "button" && race.text(node) === "task A" + "running · priority 1a").props.onClick();
+  const findCardButton = (title) => race.find(raceTree,
+    (node) => node.type === "button" && race.text(node) === title + `running · priority 1${title === "task A" ? "a" : "b"}`);
+  findCardButton("task A").props.onClick();
   raceTree = race.render();
-  race.find(raceTree, (node) => node.type === "button" && race.text(node) === "task B" + "running · priority 1b").props.onClick();
+  findCardButton("task B").props.onClick();
   assert.deepEqual(deferred.map((request) => request.endpoint), [
     "/api/plugins/kanban/tasks/a?board=alpha",
     "/api/plugins/kanban/tasks/b?board=alpha",
   ]);
   deferred[1].resolve({ task: { id: "b", title: "detail B", status: "running", priority: 1 }, child_results: [] });
   await flush();
-  assert.match(race.text(race.render()), /detail B/);
   deferred[0].resolve({ task: { id: "a", title: "detail A", status: "running", priority: 1 }, child_results: [] });
   await flush();
   raceTree = race.render();
+  assert.match(race.text(raceTree), /detail A/);
   assert.match(race.text(raceTree), /detail B/);
-  assert.doesNotMatch(race.text(raceTree), /detail A|Task details are unavailable|Loading task details/);
+  assert.equal(findCardButton("task A").props["aria-expanded"], true);
+  assert.equal(findCardButton("task B").props["aria-expanded"], true);
 
-  race.find(raceTree, (node) => node.type === "button" && race.text(node) === "task A" + "running · priority 1a").props.onClick();
+  findCardButton("task A").props.onClick();
   raceTree = race.render();
-  race.find(raceTree, (node) => node.type === "button" && race.text(node) === "task B" + "running · priority 1b").props.onClick();
-  deferred[3].resolve({ task: { id: "b", title: "detail B after error", status: "running", priority: 1 }, child_results: [] });
-  await flush();
-  deferred[2].reject({ status: 404, message: "stale task A failure" });
-  await flush();
+  assert.equal(findCardButton("task A").props["aria-expanded"], false);
+  assert.doesNotMatch(race.text(raceTree), /detail A/);
+  findCardButton("task A").props.onClick();
   raceTree = race.render();
-  assert.match(race.text(raceTree), /detail B after error/);
-  assert.doesNotMatch(race.text(raceTree), /stale task A failure|Task details are unavailable|Loading task details/);
-
-  race.find(raceTree, (node) => node.type === "button" && race.text(node) === "task A" + "running · priority 1a").props.onClick();
+  assert.equal(findCardButton("task A").props["aria-expanded"], true);
+  findCardButton("task A").props.onClick();
   raceTree = race.render();
-  race.find(raceTree, (node) => node.type === "Button" && race.text(node) === "Close").props.onClick();
-  deferred[4].reject({ status: 404, message: "late task A failure" });
+  assert.equal(findCardButton("task A").props["aria-expanded"], false);
+  assert.equal(deferred[2].endpoint, "/api/plugins/kanban/tasks/a?board=alpha");
+  deferred[2].reject({ status: 404, message: "late task A failure" });
   await flush();
-  assert.doesNotMatch(race.text(race.render()), /Task details|late task A failure/);
+  assert.match(race.text(race.render()), /detail B/);
+  assert.doesNotMatch(race.text(race.render()), /late task A failure/);
 
   const detailFailure = await loadPortfolioPlugin({
     fetchJSON: (endpoint) => endpoint === "/api/plugins/kanban/overview" ? Promise.resolve(data) : Promise.reject({ status: 404, message: "task not found" }),
