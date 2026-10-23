@@ -62,6 +62,7 @@
       h("button", {
         type: "button", className: "w-full text-left", onClick: toggleDetail,
         "aria-expanded": expanded,
+        "aria-label": `${expanded ? "Collapse" : "Expand"} details for ${task.title}`,
       },
         h("strong", null, task.title),
         h("div", { className: "text-xs text-muted-foreground" },
@@ -98,6 +99,7 @@
   function TaskCardDetail(props) {
     const task = props.detail && props.detail.task;
     const children = props.detail && props.detail.child_results || [];
+    const completedChildren = children.filter(function (child) { return child.status === "done"; }).length;
     return h("section", { className: "space-y-2 border-t pt-2", "aria-label": "Task details" },
       props.loading ? h("p", { role: "status" }, "Loading task details…") : null,
       props.error ? h("p", { role: "alert" }, "Task details are unavailable. ", props.error) : null,
@@ -111,6 +113,8 @@
           ? h("a", { href: task.source_url, target: "_blank", rel: "noopener noreferrer" }, "Open related Slack")
           : h("p", { className: "text-sm text-muted-foreground" }, "Slack source not recorded"),
         h("section", null, h("h4", null, "Direct child tasks"),
+          h("p", { className: "text-sm text-muted-foreground" },
+            `Direct child progress: ${completedChildren}/${children.length} complete`),
           children.length ? h("ul", null, children.map(function (child) {
             return h("li", { key: child.id }, `${child.title} · ${child.status}${child.latest_summary ? ` · ${child.latest_summary}` : ""}`);
           })) : h("p", { className: "text-sm text-muted-foreground" }, "No direct child tasks."))) : null);

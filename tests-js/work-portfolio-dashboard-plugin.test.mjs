@@ -100,7 +100,11 @@ async function main() {
     task: { id: "t1", title: "<img src=x>", status: "running", assignee: "alice", priority: 1,
       body: "<b>unsafe</b>", result: "done <script>x</script>", latest_summary: "latest",
       source_url: "https://acme.slack.com/archives/C123/p456?thread_ts=1" },
-    child_results: [{ id: "c1", title: "child", status: "done", latest_summary: "child latest" }],
+    child_results: [
+      { id: "c1", title: "child", status: "done", latest_summary: "child latest" },
+      { id: "c2", title: "second child", status: "done" },
+      ...Array.from({ length: 8 }, (_, index) => ({ id: `pending-${index}`, title: `pending ${index}`, status: "running" })),
+    ],
   };
   const detail = await loadPortfolioPlugin({
     fetchJSON: (endpoint) => {
@@ -124,6 +128,8 @@ async function main() {
   assert.equal(detail.find(detailTree, (node) => node.props && node.props.role === "dialog"), null, "no global detail panel is rendered");
   const expandedButton = detail.find(expandedCard, (node) => node.type === "button" && /first/.test(detail.text(node)));
   assert.equal(expandedButton.props["aria-expanded"], true);
+  assert.equal(expandedButton.props["aria-label"], "Collapse details for first");
+  assert.match(detail.text(expandedCard), /Direct child progress: 2\/10 complete/);
   assert.doesNotMatch(detail.text(detailTree), /Slack source not recorded/);
   const slack = detail.find(expandedCard, (node) => node.type === "a" && detail.text(node) === "Open related Slack");
   assert.equal(slack.props.href, detailData.task.source_url);
@@ -184,6 +190,7 @@ async function main() {
   findCardButton("task A").props.onClick();
   raceTree = race.render();
   assert.equal(findCardButton("task A").props["aria-expanded"], false);
+  assert.equal(findCardButton("task A").props["aria-label"], "Expand details for task A");
   assert.doesNotMatch(race.text(raceTree), /detail A/);
   findCardButton("task A").props.onClick();
   raceTree = race.render();

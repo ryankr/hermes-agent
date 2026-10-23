@@ -313,6 +313,14 @@
     return `${url}${sep}board=${encodeURIComponent(board)}`;
   }
 
+  function patchTask(taskId, boardSlug, patch) {
+    return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(taskId)}`, boardSlug), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+  }
+
   // The SDK's Select component fires ``onValueChange(value)`` directly
   // (it's a shadcn-style popup, not a native <select>). Older plugin
   // code calls ``onChange({target: {value}})`` which silently never
@@ -3662,11 +3670,7 @@
         const finalPatch = withCompletionSummary(patch);
         if (!finalPatch) return Promise.resolve();
         setPatchErr(null);
-        return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}`, boardSlug), {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(finalPatch),
-        }).then(function () { load(); props.onRefresh(); })
+        return patchTask(props.taskId, boardSlug, finalPatch).then(function () { load(); props.onRefresh(); })
           .catch(function (e) {
             const message = parseApiErrorMessage(e);
             setPatchErr(message);
@@ -4954,6 +4958,11 @@
   // -------------------------------------------------------------------------
   // Register
   // -------------------------------------------------------------------------
+
+  if (window.__HERMES_KANBAN_TEST_HOOKS__) {
+    window.__HERMES_KANBAN_TEST_HOOKS__.SourceUrlEditor = SourceUrlEditor;
+    window.__HERMES_KANBAN_TEST_HOOKS__.patchTask = patchTask;
+  }
 
   if (window.__HERMES_PLUGINS__ && typeof window.__HERMES_PLUGINS__.register === "function") {
     window.__HERMES_PLUGINS__.register("kanban", KanbanPage);
