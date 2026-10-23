@@ -1330,6 +1330,59 @@ def test_overview_aggregates_boards_without_mutating_current_board(client):
     assert kb.get_current_board() == "beta"
 
 
+def test_overview_includes_source_url_and_canonical_direct_child_progress(client):
+    kb.create_board("alpha")
+    with kbc.connect(board="alpha") as conn:
+        parent = kb.create_task(
+            conn, title="parent", priority=9,
+            source_url="https://acme.slack.com/archives/C123/p456?thread_ts=1",
+        )
+        done_child = kb.create_task(conn, title="done child", parents=[parent])
+        open_child = kb.create_task(conn, title="open child", parents=[parent])
+        grandchild = kb.create_task(conn, title="grandchild", parents=[done_child])
+    _set_task_status("alpha", parent, "running")
+    _set_task_status("alpha", done_child, "done")
+    _set_task_status("alpha", open_child, "blocked")
+    _set_task_status("alpha", grandchild, "done")
+
+    response = client.get("/api/plugins/kanban/overview")
+
+    assert response.status_code == 200, response.text
+    board = next(board for board in response.json()["boards"] if board["slug"] == "alpha")
+    card = next(task for task in board["focus"]["running"]["tasks"] if task["id"] == parent)
+    assert card["source_url"] == "https://acme.slack.com/archives/C123/p456?thread_ts=1"
+    assert card["progress"] == {"done": 1, "total": 2}
+
+
+@pytest.mark.parametrize("bad_url", [
+    "http://acme.slack.com/archives/C123",
+    "https://evil.slack.com.evil.test/archives/C123",
+    "https://acme.slack.com@evil.test/archives/C123",
+    "https:///archives/C123",
+    "https://",
+])
+def test_task_source_url_rejects_non_slack_or_malformed_urls(client, bad_url):
+    response = client.post("/api/plugins/kanban/tasks", json={"title": "bad source", "source_url": bad_url})
+
+    assert response.status_code == 400
+    assert "source_url" in response.json()["detail"]
+
+
+def test_task_detail_preserves_source_url_and_patch_can_clear_it(client):
+    source_url = "https://acme.slack.com/archives/C123/p456?thread_ts=1"
+    created = client.post("/api/plugins/kanban/tasks", json={"title": "source", "source_url": source_url})
+    assert created.status_code == 200, created.text
+    task_id = created.json()["task"]["id"]
+
+    detail = client.get(f"/api/plugins/kanban/tasks/{task_id}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["task"]["source_url"] == source_url
+
+    cleared = client.patch(f"/api/plugins/kanban/tasks/{task_id}", json={"clear_source_url": True})
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["task"]["source_url"] is None
+
+
 def test_overview_reports_missing_board_database_as_partial(client):
     kb.create_board("healthy")
     with kbc.connect(board="healthy") as conn:

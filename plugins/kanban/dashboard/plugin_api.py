@@ -335,15 +335,29 @@ def _portfolio_snapshot(board: dict[str, Any], focus_limit: int) -> dict[str, An
             select_fields = ["id", "title", "status", "assignee", "priority", "created_at", "started_at"]
             if "project_id" in columns:
                 select_fields.append("project_id")
+            if "source_url" in columns:
+                select_fields.append("source_url")
             selected = ", ".join(select_fields)
             focus: dict[str, dict[str, Any]] = {}
+            progress = {
+                row["parent_id"]: {"done": int(row["done"]), "total": int(row["total"])}
+                for row in conn.execute(
+                    "SELECT l.parent_id, COUNT(*) AS total, "
+                    "SUM(CASE WHEN t.status = 'done' THEN 1 ELSE 0 END) AS done "
+                    "FROM task_links l JOIN tasks t ON t.id = l.child_id GROUP BY l.parent_id"
+                )
+            }
             for status_name in _PORTFOLIO_FOCUS_STATUSES:
                 rows = conn.execute(
                     f"SELECT {selected} FROM tasks WHERE status = ? ORDER BY priority DESC, created_at ASC, id ASC LIMIT ?",
                     (status_name, focus_limit + 1),
                 ).fetchall()
                 focus[status_name] = {
-                    "tasks": [{key: row[key] for key in select_fields if row[key] is not None} for row in rows[:focus_limit]],
+                    "tasks": [
+                        {**{key: row[key] for key in select_fields if row[key] is not None},
+                         **({"progress": progress[row["id"]]} if row["id"] in progress else {})}
+                        for row in rows[:focus_limit]
+                    ],
                     "truncated": len(rows) > focus_limit,
                 }
         finally:
@@ -532,6 +546,7 @@ class CreateTaskBody(BaseModel):
     provider_override: Optional[str] = None
     reasoning_effort: Optional[str] = None  # none|minimal|…|ultra; None inherits the profile's level
     project_id: Optional[str] = None  # None inherits the board's scoped project (if any)
+    source_url: Optional[str] = None
 
 
 @router.post("/tasks")
@@ -638,6 +653,8 @@ class UpdateTaskBody(BaseModel):
     priority: Optional[int] = None
     title: Optional[str] = None
     body: Optional[str] = None
+    source_url: Optional[str] = None
+    clear_source_url: bool = False
     result: Optional[str] = None
     block_reason: Optional[str] = None
     # Handoff fields forwarded to complete_task on -> 'done' (parity with ``hermes kanban complete``).
@@ -782,13 +799,23 @@ def _patch_title_body(conn, task_id: str, payload: UpdateTaskBody, board: Option
         if payload.body is not None:
             sets.append("body = ?")
             vals.append(payload.body)
+        if payload.source_url is not None:
+            try:
+                source_url = kanban_db.validate_source_url(payload.source_url)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            sets.append("source_url = ?")
+            vals.append(source_url)
+        elif payload.clear_source_url:
+            sets.append("source_url = NULL")
         vals.append(task_id)
         conn.execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", vals)
         conn.execute(
             "INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, 'edited', NULL, ?)",
             (task_id, int(time.time())))
     kanban_db.notify_task_updated(
-        conn, task_id, [f for f in ("title", "body") if getattr(payload, f) is not None], board=board)
+        conn, task_id, [f for f in ("title", "body", "source_url") if getattr(payload, f) is not None]
+        + (["source_url"] if payload.clear_source_url else []), board=board)
 
 
 @router.patch("/tasks/{task_id}")
@@ -810,7 +837,7 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 _require_ok(ok)
         if payload.priority is not None:
             _set_priority(conn, task_id, payload.priority, board)
-        if payload.title is not None or payload.body is not None:
+        if payload.title is not None or payload.body is not None or payload.source_url is not None or payload.clear_source_url:
             _patch_title_body(conn, task_id, payload, board)
         updated = kanban_db.get_task(conn, task_id)
         return {"task": _task_dict(

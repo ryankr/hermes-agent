@@ -21,7 +21,7 @@ async function loadPortfolioPlugin({ fetchJSON }) {
       useState: (initial) => {
         const index = hook++;
         if (!(index in state)) state[index] = initial;
-        return [state[index], (value) => { state[index] = value; }];
+        return [state[index], (value) => { state[index] = typeof value === "function" ? value(state[index]) : value; }];
       },
     },
     fetchJSON,
@@ -69,7 +69,7 @@ async function main() {
       slug: "alpha",
       counts: { running: 2 },
       focus: {
-        running: { tasks: [{ id: "t1", title: "first", status: "running", priority: 1 }], truncated: true },
+        running: { tasks: [{ id: "t1", title: "first", status: "running", priority: 1, progress: { done: 2, total: 10 } }], truncated: true },
       },
     }],
   };
@@ -87,6 +87,58 @@ async function main() {
   await flush();
   assert.match(successful.text(successful.render()), /Work Portfolio/);
   assert.match(successful.text(successful.render()), /first/);
+  assert.match(successful.text(successful.render()), /2\/10/);
+
+  const calls = [];
+  const detailData = {
+    task: { id: "t1", title: "<img src=x>", status: "running", assignee: "alice", priority: 1,
+      body: "<b>unsafe</b>", result: "done <script>x</script>", latest_summary: "latest",
+      source_url: "https://acme.slack.com/archives/C123/p456?thread_ts=1" },
+    child_results: [{ id: "c1", title: "child", status: "done", latest_summary: "child latest" }],
+  };
+  const detail = await loadPortfolioPlugin({
+    fetchJSON: (endpoint) => {
+      calls.push(endpoint);
+      return endpoint === "/api/plugins/kanban/overview" ? Promise.resolve(data) : Promise.resolve(detailData);
+    },
+  });
+  detail.render();
+  detail.effects[0]();
+  await flush();
+  let detailTree = detail.render();
+  const card = detail.find(detailTree, (node) => node.type === "button" && /first/.test(detail.text(node)));
+  assert.ok(card, "focus task is a selectable button");
+  card.props.onClick();
+  await flush();
+  detailTree = detail.render();
+  assert.deepEqual(calls, ["/api/plugins/kanban/overview", "/api/plugins/kanban/tasks/t1?board=alpha"]);
+  assert.match(detail.text(detailTree), /Task details/);
+  assert.match(detail.text(detailTree), /child latest/);
+  assert.doesNotMatch(detail.text(detailTree), /Slack source not recorded/);
+  const slack = detail.find(detailTree, (node) => node.type === "a" && detail.text(node) === "Open related Slack");
+  assert.equal(slack.props.href, detailData.task.source_url);
+  assert.equal(slack.props.target, "_blank");
+  assert.equal(slack.props.rel, "noopener noreferrer");
+  const unsafe = detail.find(detailTree, (node) => node.props && Object.hasOwn(node.props, "dangerouslySetInnerHTML"));
+  assert.equal(unsafe, null, "detail text is not injected as HTML");
+
+  const missingSlack = await loadPortfolioPlugin({
+    fetchJSON: (endpoint) => endpoint === "/api/plugins/kanban/overview" ? Promise.resolve(data) : Promise.resolve({ task: { id: "t1", title: "first", status: "running", priority: 1 }, child_results: [] }),
+  });
+  missingSlack.render(); missingSlack.effects[0](); await flush();
+  let missingTree = missingSlack.render();
+  missingSlack.find(missingTree, (node) => node.type === "button" && /first/.test(missingSlack.text(node))).props.onClick();
+  await flush();
+  assert.match(missingSlack.text(missingSlack.render()), /Slack source not recorded/);
+
+  const detailFailure = await loadPortfolioPlugin({
+    fetchJSON: (endpoint) => endpoint === "/api/plugins/kanban/overview" ? Promise.resolve(data) : Promise.reject({ status: 404, message: "task not found" }),
+  });
+  detailFailure.render(); detailFailure.effects[0](); await flush();
+  let failureTree = detailFailure.render();
+  detailFailure.find(failureTree, (node) => node.type === "button" && /first/.test(detailFailure.text(node))).props.onClick();
+  await flush();
+  assert.match(detailFailure.text(detailFailure.render()), /Task details are unavailable/);
 
   let retries = 0;
   const unavailable = await loadPortfolioPlugin({

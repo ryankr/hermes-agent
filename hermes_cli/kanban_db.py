@@ -24,6 +24,7 @@ import subprocess
 import sys
 import logging
 import time
+from urllib.parse import urlsplit
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
@@ -637,6 +638,7 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    source_url: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> Task:
@@ -668,7 +670,7 @@ _TASK_EPOCH_COLUMNS = ("created_at", "started_at", "completed_at", "claim_expire
 _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "current_run_id", "workflow_template_id",
-    "current_step_key", "max_retries", "session_id", "completion_contract",
+    "current_step_key", "max_retries", "session_id", "completion_contract", "source_url",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -873,7 +875,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Explicit user-recorded Slack permalink only; no inferred session/title matching.
+    source_url           TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1153,6 +1157,24 @@ def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str
     return cleaned
 
 
+def validate_source_url(source_url: Optional[str]) -> Optional[str]:
+    """Accept only explicit Slack HTTPS permalinks; never infer a record origin."""
+    if source_url is None:
+        return None
+    if not isinstance(source_url, str) or not source_url or source_url != source_url.strip() or any(c.isspace() for c in source_url):
+        raise ValueError("source_url must be a valid https Slack URL")
+    try:
+        parsed = urlsplit(source_url)
+        host = parsed.hostname
+        parsed.port  # validate malformed port numbers too
+    except ValueError as exc:
+        raise ValueError("source_url must be a valid https Slack URL") from exc
+    if (parsed.scheme != "https" or not host or parsed.username is not None or parsed.password is not None
+            or not (host == "slack.com" or host.endswith(".slack.com"))):
+        raise ValueError("source_url must be a valid https Slack URL")
+    return source_url
+
+
 def create_task(
     conn: sqlite3.Connection, *, title: str, body: Optional[str] = None,
     assignee: Optional[str] = None, created_by: Optional[str] = None,
@@ -1167,6 +1189,7 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    source_url: Optional[str] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1187,6 +1210,7 @@ def create_task(
     from hermes_cli.kanban_pr_acceptance import validate_contract
 
     completion_contract = validate_contract(completion_contract)
+    source_url = validate_source_url(source_url)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     assignee = _canonical_assignee(assignee)
@@ -1266,8 +1290,8 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract, source_url
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1276,7 +1300,7 @@ def create_task(
                         _opt_int(max_runtime_seconds),
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
-                        1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract, source_url,
                     ),
                 )
                 for pid in parents:
@@ -3048,23 +3072,31 @@ def edit_task(
     conn: sqlite3.Connection, task_id: str, *, title: Optional[str] = None,
     body: Optional[str] = None, priority: Optional[int] = None,
     result: Optional[str] = None, summary: Optional[str] = None,
-    metadata: Optional[dict] = None, board: Optional[str] = None,
+    metadata: Optional[dict] = None, source_url: Optional[str] = None,
+    clear_source_url: bool = False, board: Optional[str] = None,
 ) -> bool:
     """Edit task fields, optionally backfilling a completed task's result."""
     changed_fields = [
-        field for field, value in (("title", title), ("body", body), ("priority", priority))
+        field for field, value in (("title", title), ("body", body), ("priority", priority), ("source_url", source_url))
         if value is not None
     ]
+    if clear_source_url:
+        source_url = None
+        changed_fields.append("source_url")
+    elif source_url is not None:
+        source_url = validate_source_url(source_url)
     with write_txn(conn):
         status = _task_status(conn, task_id)
         if status is None or (result is not None and status != "done"):
             return False
         assignments = []
         params = []
-        for field, value in (("title", title), ("body", body), ("priority", priority)):
+        for field, value in (("title", title), ("body", body), ("priority", priority), ("source_url", source_url)):
             if value is not None:
                 assignments.append(f"{field} = ?")
                 params.append(value)
+        if clear_source_url:
+            assignments.append("source_url = NULL")
         if result is not None:
             assignments.append("result = ?")
             params.append(result)
