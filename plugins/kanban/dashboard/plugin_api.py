@@ -287,6 +287,96 @@ def _link_tasks(conn: sqlite3.Connection, links: dict[str, list[str]]) -> list[d
 
 # --- GET /board -------------------------------------------------------------
 
+_PORTFOLIO_FOCUS_STATUSES = ("running", "blocked", "review", "scheduled", "ready")
+
+
+def _portfolio_worker_fenced() -> bool:
+    """Cross-board observation is invalid from a worker pinned to one board."""
+    from agent.delegation_context import explicit_board_intent_is_pinned
+
+    return explicit_board_intent_is_pinned()
+
+
+def _portfolio_db_connection(path: Path) -> sqlite3.Connection:
+    """Open an existing board DB without initialization, migration, or WAL changes."""
+    return sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+
+
+def _portfolio_task_columns(conn: sqlite3.Connection) -> set[str]:
+    return {str(row[1]) for row in conn.execute("PRAGMA table_info(tasks)")}
+
+
+def _portfolio_snapshot(board: dict[str, Any], focus_limit: int) -> dict[str, Any]:
+    """Read one board independently; callers turn local failures into safe outcomes."""
+    slug = str(board["slug"])
+    path = kanban_db.kanban_db_path(board=slug)
+    if not path.is_file():
+        raise FileNotFoundError
+    with closing(_portfolio_db_connection(path)) as conn:
+        conn.row_factory = sqlite3.Row
+        columns = _portfolio_task_columns(conn)
+        required = {"id", "title", "status", "assignee", "priority", "created_at", "started_at"}
+        if not required.issubset(columns):
+            raise sqlite3.DatabaseError("tasks schema is unavailable")
+        canonical = {status: 0 for status in BOARD_COLUMNS if status != "archived"}
+        unknown: dict[str, int] = {}
+        for row in conn.execute("SELECT status, COUNT(*) AS n FROM tasks WHERE status != 'archived' GROUP BY status"):
+            status_name, count = str(row["status"]), int(row["n"])
+            if status_name in canonical:
+                canonical[status_name] = count
+            else:
+                unknown[status_name] = count
+        select_fields = ["id", "title", "status", "assignee", "priority", "created_at", "started_at"]
+        if "project_id" in columns:
+            select_fields.append("project_id")
+        selected = ", ".join(select_fields)
+        focus = {status: [] for status in _PORTFOLIO_FOCUS_STATUSES}
+        for status_name in _PORTFOLIO_FOCUS_STATUSES:
+            rows = conn.execute(
+                f"SELECT {selected} FROM tasks WHERE status = ? ORDER BY priority DESC, created_at ASC, id ASC LIMIT ?",
+                (status_name, focus_limit),
+            ).fetchall()
+            focus[status_name] = [{key: row[key] for key in select_fields if row[key] is not None} for row in rows]
+    snapshot = {
+        "slug": slug,
+        "name": board.get("name") or slug,
+        "counts": canonical,
+        "unknown_statuses": unknown,
+        "focus": focus,
+    }
+    if board.get("project_id"):
+        snapshot["project_id"] = board["project_id"]
+    return snapshot
+
+
+@router.get("/overview")
+def get_overview(focus_limit: int = Query(5, ge=1, le=20)):
+    """Read-only, per-board portfolio snapshot; Kanban remains its sole state owner."""
+    if _portfolio_worker_fenced():
+        raise HTTPException(status_code=409, detail="Portfolio overview is unavailable in a Kanban worker context.")
+    observation_started_at = int(time.time())
+    boards: list[dict[str, Any]] = []
+    failures: list[dict[str, str]] = []
+    for board in kanban_db.list_boards(include_archived=False):
+        slug = str(board["slug"])
+        try:
+            boards.append(_portfolio_snapshot(board, focus_limit))
+        except FileNotFoundError:
+            failures.append({"board": slug, "code": "database_missing", "message": "Board database is unavailable."})
+        except (sqlite3.DatabaseError, OSError, ValueError):
+            failures.append({"board": slug, "code": "schema_unavailable", "message": "Board data is unavailable."})
+    outcome = "complete" if not failures else ("partial" if boards else "unavailable")
+    return {
+        "schema_version": 1,
+        "observation_started_at": observation_started_at,
+        "observation_completed_at": int(time.time()),
+        "consistency": {"scope": "per_board", "cross_board_atomic": False},
+        "current_board": kanban_db.get_current_board(),
+        "outcome": outcome,
+        "boards": boards,
+        "failures": failures,
+    }
+
 def get_board(
     tenant: Optional[str] = Query(None, description="Filter to a single tenant"),
     include_archived: bool = Query(False),
