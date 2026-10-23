@@ -160,6 +160,7 @@ _SPECS = [
     _cmd("create", [
         _arg("title", help="Task title"),
         _arg("--body", help="Optional opening post"),
+        _arg("--source-url", metavar="URL", help="Explicit https://*.slack.com permalink for the recorded source"),
         _arg("--body-file", metavar="PATH",
              help="Read the opening post from a file ('-' = stdin), so bodies with embedded "
                   "newlines or flag-like lines survive shell quoting. "
@@ -310,6 +311,8 @@ _SPECS = [
         _arg("--body", help="Replace the task body"),
         _arg("--priority", type=int, help="Replace the task priority"),
         _arg("--result", help="Backfilled task result text for a done task"),
+        _arg("--source-url", metavar="URL", help="Replace the explicit Slack source URL"),
+        _arg("--clear-source-url", action="store_true", help="Remove the explicit Slack source URL"),
         *_STEP_HANDOFF,
     ], help="Edit task fields or recovery fields on an already-completed task"),
     _cmd("block", [

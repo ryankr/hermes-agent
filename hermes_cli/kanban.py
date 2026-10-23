@@ -374,6 +374,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             completion_contract=getattr(args, "completion_contract", None),
+            source_url=getattr(args, "source_url", None),
             initial_status=getattr(args, "initial_status", "running"),
             creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
                              if is_dispatcher_owned_worker_context() else None),
@@ -951,17 +952,20 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     title = getattr(args, "title", None)
     body = getattr(args, "body", None)
     priority = getattr(args, "priority", None)
+    source_url = getattr(args, "source_url", None)
+    clear_source_url = bool(getattr(args, "clear_source_url", False))
     if result is None and (summary is not None or raw_metadata is not None):
         return _err("kanban edit: --summary and --metadata require --result", 2)
-    if all(value is None for value in (title, body, priority, result)):
-        return _err("kanban edit: provide --title, --body, --priority, or --result", 2)
+    if all(value is None for value in (title, body, priority, result, source_url)) and not clear_source_url:
+        return _err("kanban edit: provide --title, --body, --priority, --result, --source-url, or --clear-source-url", 2)
     metadata, rc = _parse_metadata_flag(raw_metadata)
     if rc:
         return rc
     with kbc.connect_closing() as conn:
         ok = kb.edit_task(
             conn, args.task_id, title=title, body=body, priority=priority,
-            result=result, summary=summary, metadata=metadata,
+            result=result, summary=summary, metadata=metadata, source_url=source_url,
+            clear_source_url=clear_source_url,
         )
     return _ok_or_err(
         ok,

@@ -152,6 +152,20 @@ def test_kanban_edit_updates_documented_task_fields(kanban_home):
     assert any(event.kind == "reprioritized" for event in events)
 
 
+def test_kanban_cli_create_and_edit_support_explicit_slack_source_url(kanban_home):
+    source = "https://acme.slack.com/archives/C123/p456?thread_ts=1"
+    created = json.loads(kc.run_slash(f"create source-card --source-url {source} --json"))
+    task_id = created["id"]
+    assert created["source_url"] == source
+
+    replacement = "https://app.slack.com/client/T123/C456/p789"
+    kc.run_slash(f"edit {task_id} --source-url {replacement}")
+    with kbc.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+    assert task is not None
+    assert task.source_url == replacement
+
+
 def test_worker_link_preserves_foreign_child_rules(kanban_home, monkeypatch):
     with kbc.connect_closing() as conn:
         worker = kb.create_task(conn, title="worker")
