@@ -9,6 +9,7 @@ async function loadPortfolioPlugin({ fetchJSON }) {
   const registered = [];
   const state = [];
   const effects = [];
+  const refs = [];
   let hook = 0;
   let tree = null;
   const h = (type, props, ...children) => ({ type, props: props || {}, children: children.flat() });
@@ -22,6 +23,11 @@ async function loadPortfolioPlugin({ fetchJSON }) {
         const index = hook++;
         if (!(index in state)) state[index] = initial;
         return [state[index], (value) => { state[index] = typeof value === "function" ? value(state[index]) : value; }];
+      },
+      useRef: (initial) => {
+        const index = hook++;
+        if (!(index in refs)) refs[index] = { current: initial };
+        return refs[index];
       },
     },
     fetchJSON,
@@ -130,6 +136,61 @@ async function main() {
   missingSlack.find(missingTree, (node) => node.type === "button" && /first/.test(missingSlack.text(node))).props.onClick();
   await flush();
   assert.match(missingSlack.text(missingSlack.render()), /Slack source not recorded/);
+
+  const deferred = [];
+  const raceData = {
+    outcome: "complete",
+    current_board: "default",
+    boards: [{
+      slug: "alpha",
+      counts: { running: 2 },
+      focus: { running: { tasks: [
+        { id: "a", title: "task A", status: "running", priority: 1 },
+        { id: "b", title: "task B", status: "running", priority: 1 },
+      ], truncated: false } },
+    }],
+  };
+  const race = await loadPortfolioPlugin({
+    fetchJSON: (endpoint) => {
+      if (endpoint === "/api/plugins/kanban/overview") return Promise.resolve(raceData);
+      return new Promise((resolve, reject) => deferred.push({ endpoint, resolve, reject }));
+    },
+  });
+  race.render(); race.effects[0](); await flush();
+  let raceTree = race.render();
+  race.find(raceTree, (node) => node.type === "button" && race.text(node) === "task A" + "running · priority 1a").props.onClick();
+  raceTree = race.render();
+  race.find(raceTree, (node) => node.type === "button" && race.text(node) === "task B" + "running · priority 1b").props.onClick();
+  assert.deepEqual(deferred.map((request) => request.endpoint), [
+    "/api/plugins/kanban/tasks/a?board=alpha",
+    "/api/plugins/kanban/tasks/b?board=alpha",
+  ]);
+  deferred[1].resolve({ task: { id: "b", title: "detail B", status: "running", priority: 1 }, child_results: [] });
+  await flush();
+  assert.match(race.text(race.render()), /detail B/);
+  deferred[0].resolve({ task: { id: "a", title: "detail A", status: "running", priority: 1 }, child_results: [] });
+  await flush();
+  raceTree = race.render();
+  assert.match(race.text(raceTree), /detail B/);
+  assert.doesNotMatch(race.text(raceTree), /detail A|Task details are unavailable|Loading task details/);
+
+  race.find(raceTree, (node) => node.type === "button" && race.text(node) === "task A" + "running · priority 1a").props.onClick();
+  raceTree = race.render();
+  race.find(raceTree, (node) => node.type === "button" && race.text(node) === "task B" + "running · priority 1b").props.onClick();
+  deferred[3].resolve({ task: { id: "b", title: "detail B after error", status: "running", priority: 1 }, child_results: [] });
+  await flush();
+  deferred[2].reject({ status: 404, message: "stale task A failure" });
+  await flush();
+  raceTree = race.render();
+  assert.match(race.text(raceTree), /detail B after error/);
+  assert.doesNotMatch(race.text(raceTree), /stale task A failure|Task details are unavailable|Loading task details/);
+
+  race.find(raceTree, (node) => node.type === "button" && race.text(node) === "task A" + "running · priority 1a").props.onClick();
+  raceTree = race.render();
+  race.find(raceTree, (node) => node.type === "Button" && race.text(node) === "Close").props.onClick();
+  deferred[4].reject({ status: 404, message: "late task A failure" });
+  await flush();
+  assert.doesNotMatch(race.text(race.render()), /Task details|late task A failure/);
 
   const detailFailure = await loadPortfolioPlugin({
     fetchJSON: (endpoint) => endpoint === "/api/plugins/kanban/overview" ? Promise.resolve(data) : Promise.reject({ status: 404, message: "task not found" }),

@@ -8,7 +8,7 @@
   const { React } = SDK;
   const h = React.createElement;
   const { Card, CardContent, Badge, Button } = SDK.components;
-  const { useCallback, useEffect, useState } = SDK.hooks;
+  const { useCallback, useEffect, useRef, useState } = SDK.hooks;
   const API = "/api/plugins/kanban/overview";
   const FOCUS = ["running", "blocked", "review", "scheduled", "ready"];
 
@@ -89,6 +89,7 @@
     const [detail, setDetail] = useState(null);
     const [detailError, setDetailError] = useState(null);
     const [detailLoading, setDetailLoading] = useState(false);
+    const detailRequestRef = useRef(0);
     const load = useCallback(function () {
       setError(null);
       return SDK.fetchJSON(API).then(setData).catch(function (err) {
@@ -97,16 +98,24 @@
     }, []);
     useEffect(function () { load(); }, [load]);
     const selectTask = useCallback(function (task, board) {
+      const request = ++detailRequestRef.current;
       setSelection({ id: task.id, board: board });
       setDetail(null);
       setDetailError(null);
       setDetailLoading(true);
       SDK.fetchJSON(`/api/plugins/kanban/tasks/${encodeURIComponent(task.id)}?board=${encodeURIComponent(board)}`)
-        .then(setDetail)
-        .catch(function (err) { setDetailError(errorDetails(err)); })
-        .finally(function () { setDetailLoading(false); });
+        .then(function (response) {
+          if (detailRequestRef.current === request) setDetail(response);
+        })
+        .catch(function (err) {
+          if (detailRequestRef.current === request) setDetailError(errorDetails(err));
+        })
+        .finally(function () {
+          if (detailRequestRef.current === request) setDetailLoading(false);
+        });
     }, []);
     const closeDetail = useCallback(function () {
+      detailRequestRef.current += 1;
       setSelection(null); setDetail(null); setDetailError(null); setDetailLoading(false);
     }, []);
     if (error) return h("section", { role: "alert", className: "p-4" },
