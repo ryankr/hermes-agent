@@ -192,6 +192,11 @@ class TestInboundPermalinkProvenance:
         {"ok": False, "error": "missing_scope"},
         {"ok": True},
         {"ok": True, "permalink": "https://evil.test/not-slack"},
+        {"ok": True, "permalink": "https://acme.slack.com/archives/C_OTHER/p1700000000000010"},
+        {"ok": True, "permalink": "https://acme.slack.com/archives/C_CHAN/p1700000000000011"},
+        {"ok": True, "permalink": "https://acme.slack.com/archives/C_CHAN/not-a-permalink"},
+        {"ok": True, "permalink": "https://acme.slack.com/archives/C_CHAN/../p1700000000000010"},
+        {"ok": True, "permalink": "https://acme.slack.com/archives/C_CHAN/%701700000000000010"},
     ])
     async def test_missing_or_invalid_permalink_is_not_trusted(self, adapter, response):
         client = AsyncMock()
@@ -199,3 +204,12 @@ class TestInboundPermalinkProvenance:
         adapter._get_client = MagicMock(return_value=client)
 
         assert await adapter._message_permalink("C_CHAN", "1700000000.000010", "T_TEAM") is None
+
+    @pytest.mark.asyncio
+    async def test_query_bearing_exact_permalink_is_trusted(self, adapter):
+        client = AsyncMock()
+        permalink = "https://acme.slack.com/archives/C_CHAN/p1700000000000010?thread_ts=1&cid=C_CHAN"
+        client.chat_getPermalink.return_value = {"ok": True, "permalink": permalink}
+        adapter._get_client = MagicMock(return_value=client)
+
+        assert await adapter._message_permalink("C_CHAN", "1700000000.000010", "T_TEAM") == permalink

@@ -4754,8 +4754,8 @@ class SlackAdapter(BasePlatformAdapter):
             response = await self._get_client(channel_id, team_id=team_id).chat_getPermalink(
                 channel=channel_id, message_ts=ts)
             permalink = response.get("permalink") if isinstance(response, dict) and response.get("ok") else None
-            from hermes_cli.kanban_db import validate_source_url
-            return validate_source_url(permalink)
+            from gateway.platforms.slack_permalink import validate_slack_permalink
+            return validate_slack_permalink(permalink, channel_id, ts)
         except Exception:
             logger.debug("[Slack] chat.getPermalink unavailable for inbound message", exc_info=True)
             return None
