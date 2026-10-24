@@ -45,6 +45,37 @@ def test_native_admission_replay_preserves_only_exact_slack_origin_url():
         snapshot_native(runner, replace(event, internal=True))
     with pytest.raises(RuntimeStoreError, match='invalid_params'):
         snapshot_native(runner, replace(event, origin_url=origin_url.replace('C123', 'C999')))
+
+
+@pytest.mark.parametrize(
+    ('source_message_id', 'event_message_id'),
+    [
+        ('1700000000.000010', '1700000000.000011'),
+        ('1700000000.000010', None),
+        (None, '1700000000.000010'),
+    ],
+)
+def test_native_admission_refuses_slack_origin_url_not_bound_to_event_id(source_message_id, event_message_id):
+    """A durable Slack task can link only the exact inbound event it represents."""
+    adapter = object()
+    runner = SimpleNamespace(
+        config=SimpleNamespace(multiplex_profiles=False),
+        session_store=SimpleNamespace(_generate_session_key=lambda _source: 'slack-route'),
+        _adapter_for_source=lambda _source: adapter,
+        _adapter_profile_for_source=lambda _source: None,
+        _adapter_flag=lambda *_args: False,
+        _is_user_authorized_for_source=lambda *_args, **_kwargs: True,
+    )
+    source = SessionSource(platform=Platform.SLACK, chat_id='C123', user_id='U123', message_id=source_message_id)
+    event = MessageEvent(
+        text='queued work', source=source, message_id=event_message_id,
+        origin_url='https://acme.slack.com/archives/C123/p1700000000000010',
+    )
+
+    with pytest.raises(RuntimeStoreError, match='invalid_params'):
+        snapshot_native(runner, event)
+
+
 # (bridge payload overrides, expected turn text, expected restored metadata)
 BRIDGE_SHAPES = [
     ({'body': 'hello', 'nativeType': 'conversation'}, 'hello', {'whatsapp_native_type': 'conversation'}),

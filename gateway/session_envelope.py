@@ -109,7 +109,9 @@ def _event_clause(runner, event, provenance, fresh_roles):
         from gateway.config import Platform
         from gateway.platforms.slack_permalink import validate_slack_permalink
         if (source.platform != Platform.SLACK
-                or validate_slack_permalink(event.origin_url, source.chat_id, source.message_id) is None):
+                or not isinstance(source.message_id, str) or not source.message_id
+                or not isinstance(event.message_id, str) or event.message_id != source.message_id
+                or validate_slack_permalink(event.origin_url, source.chat_id, event.message_id) is None):
             return 'origin_url'
     if _native_metadata(event) is None:
         return 'metadata'
