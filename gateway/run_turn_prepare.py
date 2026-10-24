@@ -641,7 +641,14 @@ class GatewayTurnPrepareMixin:
         restore_gateway_yolo(session_key, session_entry.yolo)  # None: TurnRunner seeds the launch policy
         context = build_session_context(source, self.config, session_entry)
         # Session context variables for tools (task-local, concurrency-safe)
-        _session_env_tokens = self._set_session_env(context)
+        # Source routing is durable, but Slack origin provenance belongs only to the inbound event:
+        # retaining it on SessionSource would let a later message reuse an old permalink.
+        if getattr(event, "origin_url", None):
+            context.source.event_origin_url = event.origin_url
+        try:
+            _session_env_tokens = self._set_session_env(context)
+        finally:
+            context.source.event_origin_url = None
         # Self-injected turns (internal=True) persist with a DB-only display_kind: timeline notices, not user bubbles.
         from gateway.response_filters import display_kind_for_event
         persist_user_display_kind = display_kind_for_event(event)

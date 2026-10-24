@@ -111,6 +111,9 @@ class MessageEvent:
     # ``message_id`` with new text, so native admission keys it apart from the original send.
     # Appended for positional compat (see the field-order rule above).
     edit_revision: Optional[str] = None
+    # Trusted permalink for the exact inbound Slack message. It is event-scoped provenance:
+    # the gateway binds it only for this turn and never writes it into SessionSource/session state.
+    origin_url: Optional[str] = None
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
