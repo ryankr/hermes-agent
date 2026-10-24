@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import sys
 
 
 def ensure_launch_provider(args) -> bool:
@@ -32,8 +33,15 @@ def ensure_launch_provider(args) -> bool:
 
 def launch_gateway_chat(args) -> int:
     try:
+        from hermes_cli.gateway_chat import GatewayClientError, launch_from_args, bypass_launch, validate_source
+
+        try:
+            validate_source(args)
+        except GatewayClientError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
+
         from hermes_cli.main import _confirm_startup_expensive_model_override
-        from hermes_cli.gateway_chat import launch_from_args, bypass_launch
 
         # Consent belongs before discovery/admission, even with --yolo. A bypass launch has
         # no profile-derived model/provider to guard and must not read config.yaml here.

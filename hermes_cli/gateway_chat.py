@@ -89,6 +89,7 @@ def wants_latest(args):
 
 
 def validate_options(args):
+    validate_source(args)
     unsupported = [name for name in _UNSUPPORTED if getattr(args, name, None)]
     if getattr(args, "create_if_missing", False) and not continue_title(args):
         unsupported.append("create-if-missing without -c <name>")
@@ -107,6 +108,20 @@ def validate_options(args):
         raise GatewayClientError("--safe-mode / --ignore-user-config (or HERMES_SAFE_MODE / HERMES_IGNORE_USER_CONFIG) "
                                  "read no profile default: pass --model explicitly."
                                  f"\n  Example: {_SAFE_MODE_EXAMPLE}")
+
+
+def validate_source(args) -> None:
+    """Reject an invalid CLI session surface before startup reads config or opens a session."""
+    source = getattr(args, "source", None)
+    if source is None:
+        return
+    from gateway.session_policy import SURFACES
+
+    if source not in SURFACES:
+        allowed = ", ".join(sorted(SURFACES))
+        raise GatewayClientError(
+            f"Unsupported --source {source!r}: source must be one supported session surface label "
+            f"({allowed}).")
 
 
 def _caller_cwd(args) -> str:
