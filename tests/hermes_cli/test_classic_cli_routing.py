@@ -54,6 +54,29 @@ def test_query_runs_main_hermes_cli(routed):
     assert calls["cli_main"]["query"] == "hello" and "gateway" not in calls
 
 
+def test_invalid_source_never_initializes_the_classic_cli_or_provider(routed, monkeypatch, capsys):
+    m, calls = routed
+
+    def unexpected():
+        raise AssertionError("invalid --source initialized provider configuration")
+
+    monkeypatch.setattr(m, "_has_any_provider_configured", unexpected)
+    with pytest.raises(SystemExit) as refused:
+        m.cmd_chat(_args(source="goal-smoke-default"))
+
+    assert refused.value.code == 2
+    assert calls == {}
+    error = capsys.readouterr().err
+    assert "session surface label" in error
+    assert "cli" in error and "tool" in error
+
+
+def test_supported_source_reaches_the_classic_cli(routed):
+    m, calls = routed
+    m.cmd_chat(_args(source="tool"))
+    assert "cli_main" in calls and "gateway" not in calls
+
+
 def test_cli_main_does_not_hand_off_to_thin_client():
     import inspect
 
