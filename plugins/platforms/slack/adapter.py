@@ -4709,6 +4709,7 @@ class SlackAdapter(BasePlatformAdapter):
         if is_dm and thread_ts and msg_type != MessageType.COMMAND:
             await self._set_assistant_thread_title(
                 channel_id, thread_ts, original_text or text, team_id=team_id)
+        origin_url = await self._message_permalink(channel_id, ts, team_id)
         source = self.build_source(
             chat_id=channel_id,
             chat_name=channel_name,
@@ -4729,6 +4730,7 @@ class SlackAdapter(BasePlatformAdapter):
             text=(command_probe_text if is_command_text else text),
             message_type=msg_type,
             source=source,
+            origin_url=origin_url,
             raw_message=event,
             message_id=ts,
             media_urls=media_urls,
@@ -4741,6 +4743,22 @@ class SlackAdapter(BasePlatformAdapter):
             # thread_ts is the thread root, not an explicit reply (root is in channel_context).
             reply_to_text=None,
             auto_skill=resolve_channel_skills(self.config.extra, channel_id, None))
+
+    async def _message_permalink(self, channel_id: str, ts: str, team_id: str) -> Optional[str]:
+        """Return a validated permalink for this inbound message, never its thread root.
+
+        A missing or invalid response deliberately leaves no trusted provenance. Kanban creation
+        then fails closed for the Slack turn rather than creating an unlinked card.
+        """
+        try:
+            response = await self._get_client(channel_id, team_id=team_id).chat_getPermalink(
+                channel=channel_id, message_ts=ts)
+            permalink = response.get("permalink") if isinstance(response, dict) and response.get("ok") else None
+            from gateway.platforms.slack_permalink import validate_slack_permalink
+            return validate_slack_permalink(permalink, channel_id, ts)
+        except Exception:
+            logger.debug("[Slack] chat.getPermalink unavailable for inbound message", exc_info=True)
+            return None
 
     def _note_attachment_failure(
         self, notices: list[str], detail: Optional[str], fallback_msg: str, *fallback_args: Any,

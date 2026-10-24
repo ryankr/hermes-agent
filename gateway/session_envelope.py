@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 _EVENT_FIELDS = (
     'user_id', 'user_name', 'message_id', 'platform_update_id',
     'reply_to_message_id', 'reply_to_text', 'reply_to_author_id',
-    'reply_to_author_name', 'reply_to_is_own_message', 'allow_gateway_control',
+    'reply_to_author_name', 'reply_to_is_own_message', 'allow_gateway_control', 'origin_url',
 )
 # ``reply_anchor_override`` = '' is Telegram topic transfer's "do not quote the root DM" (#139136).
 _CONTEXT_FIELDS = ('auto_skill', 'channel_prompt', 'channel_context', 'reply_expected', 'reply_anchor_override',
@@ -105,6 +105,14 @@ def _event_clause(runner, event, provenance, fresh_roles):
         return 'command'
     if event.internal:
         return 'internal'
+    if event.origin_url is not None:
+        from gateway.config import Platform
+        from gateway.platforms.slack_permalink import validate_slack_permalink
+        if (source.platform != Platform.SLACK
+                or not isinstance(source.message_id, str) or not source.message_id
+                or not isinstance(event.message_id, str) or event.message_id != source.message_id
+                or validate_slack_permalink(event.origin_url, source.chat_id, event.message_id) is None):
+            return 'origin_url'
     if _native_metadata(event) is None:
         return 'metadata'
     if event.prompt_response:

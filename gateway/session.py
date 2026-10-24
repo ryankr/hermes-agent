@@ -100,6 +100,10 @@ class SessionSource:
     # over the authenticated relay WebSocket. ``platform`` is the UNDERLYING platform, not
     # ``relay``, so authz must key upstream trust off THIS flag.
     delivered_via_upstream_relay: bool = False
+    # Event-only trusted provenance (currently Slack's triggering-message permalink). It is
+    # intentionally excluded from to_dict/from_dict: SessionSource is durable routing state and
+    # a later turn must never reuse a previous event's link.
+    event_origin_url: Optional[str] = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         # Mirror scope_id/guild_id onto each other (scope_id wins) so readers of EITHER agree.

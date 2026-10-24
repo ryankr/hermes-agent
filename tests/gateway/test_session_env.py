@@ -76,6 +76,27 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     runner._clear_session_env(tokens)
 
 
+def test_event_origin_url_is_turn_scoped_and_cleared():
+    runner = object.__new__(GatewayRunner)
+    slack_source = SessionSource(platform=Platform.SLACK, chat_id="C123")
+    slack_source.event_origin_url = "https://acme.slack.com/archives/C123/p170"
+    tokens = runner._set_session_env(SessionContext(
+        source=slack_source, connected_platforms=[], home_channels={}))
+    try:
+        assert get_session_env("HERMES_SESSION_SOURCE_URL") == "https://acme.slack.com/archives/C123/p170"
+    finally:
+        runner._clear_session_env(tokens)
+
+    next_turn = SessionContext(
+        source=SessionSource(platform=Platform.DISCORD, chat_id="D123"),
+        connected_platforms=[], home_channels={})
+    tokens = runner._set_session_env(next_turn)
+    try:
+        assert get_session_env("HERMES_SESSION_SOURCE_URL") == ""
+    finally:
+        runner._clear_session_env(tokens)
+
+
 def test_clear_session_env_restores_previous_state(monkeypatch):
     """_clear_session_env should restore contextvars to their pre-handler values."""
     runner = object.__new__(GatewayRunner)

@@ -1116,6 +1116,16 @@ def _handle_create(args: dict, **kw) -> str:
     with _board(args.get("board")) as (kb, conn):
         from gateway.session_context import get_session_env
         from tools.async_delegation import _current_origin_session_id
+        source_url = None
+        if get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower() == "slack":
+            source_url = get_session_env("HERMES_SESSION_SOURCE_URL", "")
+            _check(source_url,
+                   "Slack-origin kanban_create requires a trusted Slack permalink; task was not created")
+            try:
+                source_url = kb.validate_source_url(source_url)
+            except ValueError:
+                raise _Reject(
+                    "Slack-origin kanban_create requires a valid trusted Slack permalink; task was not created")
         self_tid = (os.environ.get("HERMES_KANBAN_TASK")
                     if _is_dispatcher_owned_worker() else None)
         self_task = kb.get_task(conn, self_tid) if self_tid else None
@@ -1146,7 +1156,7 @@ def _handle_create(args: dict, **kw) -> str:
             goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
             completion_contract=args.get("completion_contract"),
             initial_status=str(args.get("initial_status") or "running"),
-            created_by=_persisted_identity(), session_id=session_id)
+            created_by=_persisted_identity(), session_id=session_id, source_url=source_url)
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
         wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
         gate = {"gated": True, "gated_by": wait[-1].payload["parent"]} if wait else {"gated": False}

@@ -162,3 +162,54 @@ class TestThreadReplyAlwaysScopesByThread:
             f"thread reply dropped with reply_in_thread={reply_in_thread}"
         )
         assert captured[0].source.thread_id == "1700000000.000009"
+
+
+class TestInboundPermalinkProvenance:
+    @pytest.mark.asyncio
+    async def test_thread_reply_uses_its_own_ts_for_trusted_permalink(self, adapter):
+        client = AsyncMock()
+        client.chat_getPermalink.return_value = {
+            "ok": True,
+            "permalink": "https://acme.slack.com/archives/C_CHAN/p1700000000000010",
+        }
+        adapter._get_client = MagicMock(return_value=client)
+        with patch.object(adapter, "_resolve_user_name", new=AsyncMock(return_value="testuser")), \
+             patch.object(adapter, "_resolve_channel_name", new=AsyncMock(return_value="channel")):
+            message = await adapter._build_message_event(
+                _channel_event("thread reply", "1700000000.000010", "1700000000.000009"),
+                text="thread reply", original_text="thread reply", command_probe_text="thread reply",
+                is_command_text=False, channel_id="C_CHAN", team_id="T_TEAM", ts="1700000000.000010",
+                user_id="U_USER", thread_ts="1700000000.000009", is_dm=False,
+                media_urls=[], media_types=[], media_text_inlined=[], channel_context=None,
+            )
+
+        client.chat_getPermalink.assert_awaited_once_with(
+            channel="C_CHAN", message_ts="1700000000.000010")
+        assert message.origin_url == "https://acme.slack.com/archives/C_CHAN/p1700000000000010"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("response", [
+        {"ok": False, "error": "missing_scope"},
+        {"ok": True},
+        {"ok": True, "permalink": "https://evil.test/not-slack"},
+        {"ok": True, "permalink": "https://acme.slack.com/archives/C_OTHER/p1700000000000010"},
+        {"ok": True, "permalink": "https://acme.slack.com/archives/C_CHAN/p1700000000000011"},
+        {"ok": True, "permalink": "https://acme.slack.com/archives/C_CHAN/not-a-permalink"},
+        {"ok": True, "permalink": "https://acme.slack.com/archives/C_CHAN/../p1700000000000010"},
+        {"ok": True, "permalink": "https://acme.slack.com/archives/C_CHAN/%701700000000000010"},
+    ])
+    async def test_missing_or_invalid_permalink_is_not_trusted(self, adapter, response):
+        client = AsyncMock()
+        client.chat_getPermalink.return_value = response
+        adapter._get_client = MagicMock(return_value=client)
+
+        assert await adapter._message_permalink("C_CHAN", "1700000000.000010", "T_TEAM") is None
+
+    @pytest.mark.asyncio
+    async def test_query_bearing_exact_permalink_is_trusted(self, adapter):
+        client = AsyncMock()
+        permalink = "https://acme.slack.com/archives/C_CHAN/p1700000000000010?thread_ts=1&cid=C_CHAN"
+        client.chat_getPermalink.return_value = {"ok": True, "permalink": permalink}
+        adapter._get_client = MagicMock(return_value=client)
+
+        assert await adapter._message_permalink("C_CHAN", "1700000000.000010", "T_TEAM") == permalink

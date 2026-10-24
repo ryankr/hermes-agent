@@ -4001,6 +4001,9 @@ class GatewayRunner(
             # (and a command it yields to the background) must still see its own session.
             session_id=context.session_id or "",
             message_id=str(context.source.message_id) if context.source.message_id else "",
+            # Set only by the inbound event boundary in _hmwa_prepare_turn. SessionSource is
+            # durable routing state, so provenance must never be serialized there.
+            source_url=str(context.source.event_origin_url or ""),
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
             cron_session="", session_history_delivery=_history_delivery, **_api_vars)
